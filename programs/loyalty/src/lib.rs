@@ -16,6 +16,6 @@ pub mod loyalty {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        initialize::handler(ctx)
+        crate::instructions::initialize::handler(ctx)
     }
 }

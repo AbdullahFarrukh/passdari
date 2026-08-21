@@ -1,6 +1,9 @@
-
 use {
-    anchor_lang::{solana_program::instruction::Instruction, InstructionData, ToAccountMetas},
+    anchor_lang::{
+        prelude::Pubkey,
+        solana_program::{instruction::Instruction, system_program},
+        InstructionData, ToAccountMetas,
+    },
     litesvm::LiteSVM,
     solana_message::{Message, VersionedMessage},
     solana_signer::Signer,
@@ -16,11 +19,21 @@ fn test_initialize() {
     let bytes = include_bytes!("../../../target/deploy/loyalty.so");
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
-    
+
+    let (counter_pda, _bump) = Pubkey::find_program_address(
+        &[b"counter", payer.pubkey().as_ref()],
+        &program_id,
+    );
+
     let instruction = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::Initialize {}.data(),
-        loyalty::accounts::Initialize {}.to_account_metas(None),
+        loyalty::accounts::Initialize {
+            counter: counter_pda,
+            owner: payer.pubkey(),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
     );
 
     let blockhash = svm.latest_blockhash();
