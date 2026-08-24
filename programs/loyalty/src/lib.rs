@@ -40,4 +40,20 @@ pub mod loyalty {
             receipt_ttl_seconds,
         )
     }
+
+        pub fn update_business_config(
+        ctx: Context<UpdateBusinessConfig>,
+        reward_label: String,
+        stamps_required: u8,
+        min_purchase_amount: u64,
+        receipt_ttl_seconds: u32,
+    ) -> Result<()> {
+        crate::instructions::update_business_config::update_business_config_handler(
+            ctx,
+            reward_label,
+            stamps_required,
+            min_purchase_amount,
+            receipt_ttl_seconds,
+        )
+    }
 }
