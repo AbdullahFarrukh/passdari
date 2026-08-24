@@ -15,7 +15,29 @@ declare_id!("HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL");
 pub mod loyalty {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        crate::instructions::initialize::handler(ctx)
+        pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        crate::instructions::initialize::initialize_handler(ctx)
+    }
+
+    pub fn register_business(
+        ctx: Context<RegisterBusiness>,
+        name: String,
+        category: String,
+        reward_label: String,
+        stamps_required: u8,
+        min_purchase_amount: u64,
+        currency: String,
+        receipt_ttl_seconds: u32,
+    ) -> Result<()> {
+        crate::instructions::register_business::register_business_handler(
+            ctx,
+            name,
+            category,
+            reward_label,
+            stamps_required,
+            min_purchase_amount,
+            currency,
+            receipt_ttl_seconds,
+        )
     }
 }

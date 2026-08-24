@@ -18,7 +18,7 @@ pub struct Initialize<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler(ctx: Context<Initialize>) -> Result<()> {
+pub fn initialize_handler(ctx: Context<Initialize>) -> Result<()> {
     let counter = &mut ctx.accounts.counter;
     counter.owner = ctx.accounts.owner.key();
     counter.count = 0;
