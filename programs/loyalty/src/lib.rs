@@ -56,4 +56,12 @@ pub mod loyalty {
             receipt_ttl_seconds,
         )
     }
+
+        pub fn issue_receipt(
+        ctx: Context<IssueReceipt>,
+        secret_hash: [u8; 32],
+        amount_band: u8,
+    ) -> Result<()> {
+        crate::instructions::issue_receipt::issue_receipt_handler(ctx, secret_hash, amount_band)
+    }
 }

@@ -4,4 +4,6 @@ use anchor_lang::prelude::*;
 pub enum ErrorCode {
     #[msg("Custom error message")]
     CustomError,
+    #[msg("The purchase amount must meet the business's minimum threshold")]
+    InvalidAmountBand,
 }

@@ -29,3 +29,13 @@ pub struct Business {
     pub total_redemptions: u32,
     pub bump: u8,
 }
+
+#[account]
+#[derive(InitSpace)]
+pub struct Receipt {
+    pub business: Pubkey,
+    pub amount_band: u8,
+    pub issued_at: i64,
+    pub expires_at: i64,
+    pub bump: u8,
+}
