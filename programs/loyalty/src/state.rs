@@ -51,3 +51,14 @@ pub struct LoyaltyCard {
     pub redemptions: u32,
     pub bump: u8,
 }
+
+#[account]
+#[derive(InitSpace)]
+pub struct Voucher {
+    pub business: Pubkey,
+    pub owner: Pubkey,
+    pub voucher_id: u64,
+    pub minted_at: i64,
+    pub pending_redemption: bool,
+    pub bump: u8,
+}

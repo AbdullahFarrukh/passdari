@@ -68,4 +68,29 @@ pub mod loyalty {
         pub fn claim_receipt(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Result<()> {
         crate::instructions::claim_receipt::claim_receipt_handler(ctx, secret)
     }
+
+        pub fn mint_voucher(ctx: Context<MintVoucher>, voucher_id: u64) -> Result<()> {
+        crate::instructions::mint_voucher::mint_voucher_handler(ctx, voucher_id)
+    }
+
+    pub fn transfer_voucher(ctx: Context<TransferVoucher>, new_owner: Pubkey) -> Result<()> {
+        crate::instructions::transfer_voucher::transfer_voucher_handler(ctx, new_owner)
+    }
+
+    pub fn present_voucher(ctx: Context<PresentVoucher>) -> Result<()> {
+        crate::instructions::present_voucher::present_voucher_handler(ctx)
+    }
+
+    pub fn cancel_presentation(ctx: Context<CancelPresentation>) -> Result<()> {
+        crate::instructions::cancel_presentation::cancel_presentation_handler(ctx)
+    }
+
+    pub fn redeem_voucher(ctx: Context<RedeemVoucher>) -> Result<()> {
+        crate::instructions::redeem_voucher::redeem_voucher_handler(ctx)
+    }
+
+    pub fn reclaim_expired_receipt(ctx: Context<ReclaimExpiredReceipt>) -> Result<()> {
+        crate::instructions::reclaim_expired_receipt::reclaim_expired_receipt_handler(ctx)
+    }
+    
 }
