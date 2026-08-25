@@ -39,3 +39,15 @@ pub struct Receipt {
     pub expires_at: i64,
     pub bump: u8,
 }
+
+#[account]
+#[derive(InitSpace)]
+pub struct LoyaltyCard {
+    pub business: Pubkey,
+    pub customer: Pubkey,
+    pub stamps: u8,
+    pub last_stamp_ts: i64,
+    pub lifetime_stamps: u32,
+    pub redemptions: u32,
+    pub bump: u8,
+}

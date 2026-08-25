@@ -64,4 +64,8 @@ pub mod loyalty {
     ) -> Result<()> {
         crate::instructions::issue_receipt::issue_receipt_handler(ctx, secret_hash, amount_band)
     }
+
+        pub fn claim_receipt(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Result<()> {
+        crate::instructions::claim_receipt::claim_receipt_handler(ctx, secret)
+    }
 }

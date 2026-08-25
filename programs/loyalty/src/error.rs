@@ -6,4 +6,8 @@ pub enum ErrorCode {
     CustomError,
     #[msg("The purchase amount must meet the business's minimum threshold")]
     InvalidAmountBand,
+    #[msg("This receipt has expired")]
+    ReceiptExpired,
+    #[msg("The provided secret does not match this receipt")]
+    InvalidSecret,
 }
