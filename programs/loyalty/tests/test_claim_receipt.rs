@@ -137,6 +137,11 @@ fn test_claim_receipt_second_stamp_reuses_card() {
         let msg = Message::new_with_blockhash(&[ix], Some(&customer.pubkey()), &blockhash);
         let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&customer]).unwrap();
         assert!(svm.send_transaction(tx).is_ok(), "claim should succeed");
+
+        // Advance past the 60-second stamp cooldown before the next claim.
+        let mut clock = svm.get_sysvar::<Clock>();
+        clock.unix_timestamp += 61;
+        svm.set_sysvar::<Clock>(&clock);
     }
 
     let card_account = svm.get_account(&card_pda).unwrap();
@@ -147,6 +152,39 @@ fn test_claim_receipt_second_stamp_reuses_card() {
     let business = loyalty::Business::try_deserialize(&mut business_account.data.as_slice()).unwrap();
     assert_eq!(business.total_cards, 1, "the same card must not be counted twice");
     assert_eq!(business.total_stamps_issued, 2);
+}
+
+#[test]
+fn test_claim_receipt_twice_fails() {
+    let program_id = loyalty::id();
+    let owner = Keypair::new();
+    let customer = Keypair::new();
+    let mut svm = LiteSVM::new();
+    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
+    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+
+    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
+    register(&mut svm, program_id, &owner, business_pda, 10, 300);
+
+    let secret = [61u8; 32];
+    let receipt_pda = issue(&mut svm, program_id, &owner, business_pda, secret);
+    let (card_pda, _) = Pubkey::find_program_address(&[b"card", business_pda.as_ref(), customer.pubkey().as_ref()], &program_id);
+
+    let ix1 = claim_ix(program_id, business_pda, receipt_pda, card_pda, customer.pubkey(), secret);
+    let bh1 = svm.latest_blockhash();
+    let msg1 = Message::new_with_blockhash(&[ix1], Some(&customer.pubkey()), &bh1);
+    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&customer]).unwrap();
+    assert!(svm.send_transaction(tx1).is_ok(), "first claim should succeed");
+
+    // Same receipt, same secret, submitted again — the account was closed
+    // after the first claim, so this must fail.
+    let ix2 = claim_ix(program_id, business_pda, receipt_pda, card_pda, customer.pubkey(), secret);
+    let bh2 = svm.latest_blockhash();
+    let msg2 = Message::new_with_blockhash(&[ix2], Some(&customer.pubkey()), &bh2);
+    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&customer]).unwrap();
+    let res2 = svm.send_transaction(tx2);
+    assert!(res2.is_err(), "claiming the same receipt twice should succeed only once");
 }
 
 #[test]
@@ -185,12 +223,11 @@ fn test_claim_receipt_expired_fails() {
     svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 10, 1); // 1-second validity
+    register(&mut svm, program_id, &owner, business_pda, 10, 1);
 
     let secret = [41u8; 32];
     let receipt_pda = issue(&mut svm, program_id, &owner, business_pda, secret);
 
-    // Fast-forward the simulated chain's clock, no real waiting involved.
     let mut clock = svm.get_sysvar::<Clock>();
     clock.unix_timestamp += 3600;
     svm.set_sysvar::<Clock>(&clock);
@@ -221,9 +258,8 @@ fn test_claim_receipt_cross_tenant_fails() {
     register(&mut svm, program_id, &owner_b, business_b, 10, 300);
 
     let secret = [51u8; 32];
-    let receipt_pda = issue(&mut svm, program_id, &owner_a, business_a, secret); // issued by A
+    let receipt_pda = issue(&mut svm, program_id, &owner_a, business_a, secret);
 
-    // Try to claim it against business B's card instead.
     let (card_pda, _) = Pubkey::find_program_address(&[b"card", business_b.as_ref(), customer.pubkey().as_ref()], &program_id);
     let ix = claim_ix(program_id, business_b, receipt_pda, card_pda, customer.pubkey(), secret);
     let blockhash = svm.latest_blockhash();
