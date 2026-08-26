@@ -20,4 +20,10 @@ pub enum ErrorCode {
     VoucherNotPresented,
     #[msg("This receipt has not yet expired")]
     ReceiptNotYetExpired,
+    #[msg("Please wait before claiming another stamp on this card")]
+    StampCooldownActive,
+    #[msg("This business has issued too many receipts in the last hour")]
+    ReceiptRateLimitExceeded,
+    #[msg("This card has claimed too many stamps today")]
+    ClaimRateLimitExceeded,
 }

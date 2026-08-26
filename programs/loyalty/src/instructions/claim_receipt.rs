@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use solana_keccak_hasher as keccak;
 use crate::state::{Business, Receipt, LoyaltyCard};
 use crate::error::ErrorCode;
+use crate::{STAMP_COOLDOWN_SECONDS, MAX_CLAIMS_PER_CARD_PER_DAY};
 
 #[derive(Accounts)]
 pub struct ClaimReceipt<'info> {
@@ -35,10 +36,6 @@ pub struct StampClaimed {
 }
 
 pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Result<()> {
-    // Recompute the hash from the raw secret, and check it derives the exact
-    // address of the receipt account the caller supplied. This is the proof
-    // of possession — the same guarantee the seeds constraint would have
-    // given us, just checked explicitly instead of declaratively.
     let computed_hash = keccak::hash(secret.as_ref());
     let (expected_receipt, _bump) = Pubkey::find_program_address(
         &[
@@ -65,7 +62,17 @@ pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Re
         card.lifetime_stamps = 0;
         card.redemptions = 0;
         card.bump = ctx.bumps.card;
+    } else {
+        require!(now - card.last_stamp_ts >= STAMP_COOLDOWN_SECONDS, ErrorCode::StampCooldownActive);
     }
+
+    if now - card.claims_window_start >= 86400 {
+        card.claims_window_start = now;
+        card.claims_this_window = 0;
+    }
+    require!(card.claims_this_window < MAX_CLAIMS_PER_CARD_PER_DAY, ErrorCode::ClaimRateLimitExceeded);
+    card.claims_this_window += 1;
+
     card.stamps += 1;
     card.lifetime_stamps += 1;
     card.last_stamp_ts = now;

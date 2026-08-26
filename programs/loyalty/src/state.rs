@@ -23,6 +23,8 @@ pub struct Business {
     #[max_len(3)]
     pub currency: String,
     pub receipt_ttl_seconds: u32,
+    pub receipts_window_start: i64,
+    pub receipts_this_window: u32,
     pub total_cards: u32,
     pub total_stamps_issued: u64,
     pub total_vouchers_issued: u64,
@@ -47,6 +49,8 @@ pub struct LoyaltyCard {
     pub customer: Pubkey,
     pub stamps: u8,
     pub last_stamp_ts: i64,
+    pub claims_window_start: i64,
+    pub claims_this_window: u32,
     pub lifetime_stamps: u32,
     pub redemptions: u32,
     pub bump: u8,

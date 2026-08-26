@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::state::{Business, Receipt};
 use crate::error::ErrorCode;
+use crate::MAX_RECEIPTS_PER_HOUR;
 
 #[derive(Accounts)]
 #[instruction(secret_hash: [u8; 32])]
@@ -35,8 +36,15 @@ pub fn issue_receipt_handler(
 ) -> Result<()> {
     require!(amount_band != 0, ErrorCode::InvalidAmountBand);
 
-    let business = &ctx.accounts.business;
     let now = Clock::get()?.unix_timestamp;
+
+    let business = &mut ctx.accounts.business;
+    if now - business.receipts_window_start >= 3600 {
+        business.receipts_window_start = now;
+        business.receipts_this_window = 0;
+    }
+    require!(business.receipts_this_window < MAX_RECEIPTS_PER_HOUR, ErrorCode::ReceiptRateLimitExceeded);
+    business.receipts_this_window += 1;
 
     let receipt = &mut ctx.accounts.receipt;
     receipt.business = business.key();
