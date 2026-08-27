@@ -46,6 +46,7 @@ fn issue_and_claim(
     owner: &Keypair,
     business_pda: Pubkey,
     customer: &Keypair,
+    relayer: &Keypair,
     secret_byte: u8,
 ) {
     let secret = [secret_byte; 32];
@@ -84,13 +85,14 @@ fn issue_and_claim(
             receipt: receipt_pda,
             card: card_pda,
             customer: customer.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let bh2 = svm.latest_blockhash();
-    let msg2 = Message::new_with_blockhash(&[claim_ix], Some(&customer.pubkey()), &bh2);
-    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[customer]).unwrap();
+    let msg2 = Message::new_with_blockhash(&[claim_ix], Some(&relayer.pubkey()), &bh2);
+    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[customer, relayer]).unwrap();
     assert!(svm.send_transaction(tx2).is_ok(), "setup claim should succeed");
 }
 
@@ -106,15 +108,23 @@ fn fill_card(
     owner: &Keypair,
     business_pda: Pubkey,
     customer: &Keypair,
+    relayer: &Keypair,
     stamps: u8,
 ) {
     for i in 0..stamps {
-        issue_and_claim(svm, program_id, owner, business_pda, customer, 100u8.wrapping_add(i));
+        issue_and_claim(svm, program_id, owner, business_pda, customer, relayer, 100u8.wrapping_add(i));
         warp(svm, 61); // clear the stamp cooldown before the next claim
     }
 }
 
-fn mint(svm: &mut LiteSVM, program_id: Pubkey, business_pda: Pubkey, customer: &Keypair, voucher_id: u64) -> Pubkey {
+fn mint(
+    svm: &mut LiteSVM,
+    program_id: Pubkey,
+    business_pda: Pubkey,
+    customer: &Keypair,
+    relayer: &Keypair,
+    voucher_id: u64,
+) -> Pubkey {
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
         &program_id,
@@ -132,13 +142,14 @@ fn mint(svm: &mut LiteSVM, program_id: Pubkey, business_pda: Pubkey, customer: &
             card: card_pda,
             voucher: voucher_pda,
             customer: customer.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix], Some(&customer.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[customer]).unwrap();
+    let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[customer, relayer]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "setup mint should succeed");
     voucher_pda
 }
@@ -156,32 +167,36 @@ fn present(svm: &mut LiteSVM, program_id: Pubkey, voucher_pda: Pubkey, owner: &K
     assert!(svm.send_transaction(tx).is_ok(), "setup present should succeed");
 }
 
+fn setup_base(svm: &mut LiteSVM, program_id: Pubkey, stamps_required: u8) -> (Keypair, Keypair, Keypair, Pubkey) {
+    let owner = Keypair::new();
+    let customer = Keypair::new();
+    let relayer = Keypair::new();
+    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
+    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
+    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
+    register(svm, program_id, &owner, business_pda, stamps_required);
+    (owner, customer, relayer, business_pda)
+}
+
 // --- Test 1: a merchant cannot reduce a card's stamps by any instruction ---
 #[test]
 fn test_redeem_does_not_touch_card_stamps() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
 
-        let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 2);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 2);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2);
 
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
         &program_id,
     );
 
-    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, 0);
+    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
 
-    // Measure stamps right here — after minting has already legitimately
-    // subtracted them, and before redeem runs. This isolates exactly what
-    // redeem_voucher itself does to the card, and nothing else.
     let card_before = svm.get_account(&card_pda).unwrap();
     let stamps_before = loyalty::LoyaltyCard::try_deserialize(&mut card_before.data.as_slice()).unwrap().stamps;
 
@@ -197,7 +212,7 @@ fn test_redeem_does_not_touch_card_stamps() {
     );
     let bh = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[redeem_ix], Some(&owner.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "redeem should succeed");
 
     let card_after = svm.get_account(&card_pda).unwrap();
@@ -213,16 +228,10 @@ fn test_redeem_does_not_touch_card_stamps() {
 #[test]
 fn test_mint_voucher_below_threshold_fails() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 5);
 
-    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 5);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 2); // only 2 of 5 needed
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2); // only 2 of 5 needed
 
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
@@ -241,13 +250,14 @@ fn test_mint_voucher_below_threshold_fails() {
             card: card_pda,
             voucher: voucher_pda,
             customer: customer.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix], Some(&customer.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[customer]).unwrap();
+    let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&customer, &relayer]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "minting below the stamp threshold should fail, but it succeeded");
 }
@@ -256,17 +266,11 @@ fn test_mint_voucher_below_threshold_fails() {
 #[test]
 fn test_redeem_unpresented_voucher_fails() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
 
-    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 1);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, 0);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     // Deliberately skip present_voucher.
 
     let ix = Instruction::new_with_bytes(
@@ -281,7 +285,7 @@ fn test_redeem_unpresented_voucher_fails() {
     );
     let bh = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix], Some(&owner.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "redeeming an unpresented voucher should fail, but it succeeded");
 }
@@ -290,25 +294,26 @@ fn test_redeem_unpresented_voucher_fails() {
 #[test]
 fn test_cross_business_redeem_fails() {
     let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
     let owner_a = Keypair::new();
     let owner_b = Keypair::new();
     let customer = Keypair::new();
-    let mut svm = LiteSVM::new();
+    let relayer = Keypair::new();
     svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
     svm.airdrop(&owner_a.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&owner_b.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_a, _) = Pubkey::find_program_address(&[b"business", owner_a.pubkey().as_ref()], &program_id);
     let (business_b, _) = Pubkey::find_program_address(&[b"business", owner_b.pubkey().as_ref()], &program_id);
     register(&mut svm, program_id, &owner_a, business_a, 1);
     register(&mut svm, program_id, &owner_b, business_b, 1);
 
-    fill_card(&mut svm, program_id, &owner_a, business_a, &customer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_a, &customer, 0); // minted at A
+    fill_card(&mut svm, program_id, &owner_a, business_a, &customer, &relayer, 1);
+    let voucher_pda = mint(&mut svm, program_id, business_a, &customer, &relayer, 0); // minted at A
     present(&mut svm, program_id, voucher_pda, &customer);
 
-    // Business B tries to redeem a voucher that belongs to business A.
     let ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::RedeemVoucher {}.data(),
@@ -321,7 +326,7 @@ fn test_cross_business_redeem_fails() {
     );
     let bh = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix], Some(&owner_b.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner_b]).unwrap();
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner_b]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "business B must not redeem a voucher issued by business A");
 }
@@ -330,20 +335,13 @@ fn test_cross_business_redeem_fails() {
 #[test]
 fn test_old_owner_locked_out_after_transfer() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
-    let new_owner = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    let new_owner = Keypair::new();
 
-    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 1);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, 0);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
 
-    // Transfer away from `customer`.
     let transfer_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::TransferVoucher { new_owner: new_owner.pubkey() }.data(),
@@ -355,7 +353,6 @@ fn test_old_owner_locked_out_after_transfer() {
     let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&customer]).unwrap();
     assert!(svm.send_transaction(tx1).is_ok(), "setup transfer should succeed");
 
-    // Old owner tries to present it — should fail, they don't own it anymore.
     let present_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::PresentVoucher {}.data(),
@@ -368,7 +365,6 @@ fn test_old_owner_locked_out_after_transfer() {
     let res2 = svm.send_transaction(tx2);
     assert!(res2.is_err(), "the old owner should not be able to present a voucher they no longer own");
 
-    // Old owner tries to transfer it again — should also fail.
     let transfer_again_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::TransferVoucher { new_owner: owner.pubkey() }.data(),
@@ -386,18 +382,12 @@ fn test_old_owner_locked_out_after_transfer() {
 #[test]
 fn test_transfer_while_pending_fails() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
-    let recipient = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    let recipient = Keypair::new();
 
-    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 1);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, 0);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
 
     let ix = Instruction::new_with_bytes(
@@ -417,17 +407,11 @@ fn test_transfer_while_pending_fails() {
 #[test]
 fn test_redeem_twice_fails() {
     let program_id = loyalty::id();
-    let owner = Keypair::new();
-    let customer = Keypair::new();
     let mut svm = LiteSVM::new();
-    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
-    svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
-    svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
 
-    let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner, business_pda, 1);
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, 0);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
 
     let redeem_ix = || {

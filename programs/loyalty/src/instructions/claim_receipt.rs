@@ -1,28 +1,89 @@
 use anchor_lang::prelude::*;
-use solana_keccak_hasher as keccak;
-use crate::state::{Business, Receipt, LoyaltyCard};
+use solana_keccak_hasher::hash;
+use crate::state::{Business, LoyaltyCard, Receipt};
 use crate::error::ErrorCode;
-use crate::{STAMP_COOLDOWN_SECONDS, MAX_CLAIMS_PER_CARD_PER_DAY};
+use crate::constants::{STAMP_COOLDOWN_SECONDS, MAX_CLAIMS_PER_CARD_PER_DAY};
+
+pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Result<()> {
+    let receipt = &ctx.accounts.receipt;
+    let business = &mut ctx.accounts.business;
+    let card = &mut ctx.accounts.card;
+    let clock = Clock::get()?;
+
+    let computed_hash = hash(secret.as_ref()).to_bytes();
+    let (expected_receipt_pda, _bump) = Pubkey::find_program_address(
+        &[b"receipt", business.key().as_ref(), computed_hash.as_ref()],
+        ctx.program_id,
+    );
+    require_keys_eq!(expected_receipt_pda, receipt.key(), ErrorCode::InvalidSecret);
+
+    require!(clock.unix_timestamp <= receipt.expires_at, ErrorCode::ReceiptExpired);
+
+    if card.business == Pubkey::default() {
+        card.business = business.key();
+        card.customer = ctx.accounts.customer.key();
+        card.bump = ctx.bumps.card;
+    }
+
+    if card.last_stamp_ts != 0 {
+        require!(
+            clock.unix_timestamp - card.last_stamp_ts >= STAMP_COOLDOWN_SECONDS,
+            ErrorCode::StampCooldownActive
+        );
+    }
+
+    if clock.unix_timestamp - card.claims_window_start >= 86400 {
+        card.claims_window_start = clock.unix_timestamp;
+        card.claims_this_window = 0;
+    }
+    require!(
+        card.claims_this_window < MAX_CLAIMS_PER_CARD_PER_DAY,
+        ErrorCode::ClaimRateLimitExceeded
+    );
+    card.claims_this_window += 1;
+
+    card.stamps += 1;
+    card.last_stamp_ts = clock.unix_timestamp;
+    card.lifetime_stamps += 1;
+
+    business.total_stamps_issued += 1;
+
+    emit!(StampClaimed {
+        business: business.key(),
+        customer: card.customer,
+        stamps: card.stamps,
+        timestamp: clock.unix_timestamp,
+    });
+
+    Ok(())
+}
 
 #[derive(Accounts)]
+#[instruction(secret: [u8; 32])]
 pub struct ClaimReceipt<'info> {
     #[account(mut)]
     pub business: Account<'info, Business>,
 
-    #[account(mut, close = business, has_one = business)]
+    #[account(mut, close = business)]
     pub receipt: Account<'info, Receipt>,
 
     #[account(
         init_if_needed,
-        payer = customer,
+        payer = relayer,
         space = 8 + LoyaltyCard::INIT_SPACE,
         seeds = [b"card", business.key().as_ref(), customer.key().as_ref()],
-        bump
+        bump,
     )]
     pub card: Account<'info, LoyaltyCard>,
 
-    #[account(mut)]
+    /// The customer authorizing this claim. Signs to prove it's really them,
+    /// but pays nothing — the relayer covers rent and fees instead.
     pub customer: Signer<'info>,
+
+    /// The relayer, paying rent and fees on the customer's behalf so the
+    /// customer never needs to hold SOL.
+    #[account(mut)]
+    pub relayer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }
@@ -33,68 +94,4 @@ pub struct StampClaimed {
     pub customer: Pubkey,
     pub stamps: u8,
     pub timestamp: i64,
-}
-
-pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Result<()> {
-    let computed_hash = keccak::hash(secret.as_ref());
-    let (expected_receipt, _bump) = Pubkey::find_program_address(
-        &[
-            b"receipt",
-            ctx.accounts.business.key().as_ref(),
-            computed_hash.to_bytes().as_ref(),
-        ],
-        ctx.program_id,
-    );
-    require_keys_eq!(ctx.accounts.receipt.key(), expected_receipt, ErrorCode::InvalidSecret);
-
-    let now = Clock::get()?.unix_timestamp;
-    require!(now < ctx.accounts.receipt.expires_at, ErrorCode::ReceiptExpired);
-
-    let business_key = ctx.accounts.business.key();
-    let customer_key = ctx.accounts.customer.key();
-
-    let card = &mut ctx.accounts.card;
-    let is_new_card = card.business == Pubkey::default();
-    if is_new_card {
-        card.business = business_key;
-        card.customer = customer_key;
-        card.stamps = 0;
-        card.lifetime_stamps = 0;
-        card.redemptions = 0;
-        card.bump = ctx.bumps.card;
-    } else {
-        require!(now - card.last_stamp_ts >= STAMP_COOLDOWN_SECONDS, ErrorCode::StampCooldownActive);
-    }
-
-    if now - card.claims_window_start >= 86400 {
-        card.claims_window_start = now;
-        card.claims_this_window = 0;
-    }
-    require!(card.claims_this_window < MAX_CLAIMS_PER_CARD_PER_DAY, ErrorCode::ClaimRateLimitExceeded);
-    card.claims_this_window += 1;
-
-    card.stamps += 1;
-    card.lifetime_stamps += 1;
-    card.last_stamp_ts = now;
-    let new_stamp_count = card.stamps;
-
-    let business = &mut ctx.accounts.business;
-    business.total_stamps_issued += 1;
-    if is_new_card {
-        business.total_cards += 1;
-    }
-
-    msg!(
-        "Stamp claimed: business {:?}, customer {:?}, stamps now {}",
-        business_key, customer_key, new_stamp_count
-    );
-
-    emit!(StampClaimed {
-        business: business_key,
-        customer: customer_key,
-        stamps: new_stamp_count,
-        timestamp: now,
-    });
-
-    Ok(())
 }
