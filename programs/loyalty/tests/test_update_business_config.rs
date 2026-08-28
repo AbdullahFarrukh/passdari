@@ -12,7 +12,7 @@ use {
     solana_transaction::versioned::VersionedTransaction,
 };
 
-fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda: Pubkey) {
+fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Keypair, business_pda: Pubkey) {
     let instruction = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::RegisterBusiness {
@@ -28,13 +28,14 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda
         loyalty::accounts::RegisterBusiness {
             business: business_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let blockhash = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[instruction], Some(&owner.pubkey()), &blockhash);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let msg = Message::new_with_blockhash(&[instruction], Some(&relayer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner, relayer]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "setup registration should succeed");
 }
 
@@ -42,15 +43,17 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda
 fn test_owner_can_update_config() {
     let program_id = loyalty::id();
     let owner = Keypair::new();
+    let relayer = Keypair::new();
     let mut svm = LiteSVM::new();
     let bytes = include_bytes!("../../../target/deploy/loyalty.so");
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_pda, _bump) =
         Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
 
-    register(&mut svm, program_id, &owner, business_pda);
+    register(&mut svm, program_id, &owner, &relayer, business_pda);
 
     let update_ix = Instruction::new_with_bytes(
         program_id,
@@ -87,16 +90,18 @@ fn test_impostor_cannot_update_config() {
     let program_id = loyalty::id();
     let owner = Keypair::new();
     let impostor = Keypair::new();
+    let relayer = Keypair::new();
     let mut svm = LiteSVM::new();
     let bytes = include_bytes!("../../../target/deploy/loyalty.so");
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&owner.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&impostor.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_pda, _bump) =
         Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
 
-    register(&mut svm, program_id, &owner, business_pda);
+    register(&mut svm, program_id, &owner, &relayer, business_pda);
 
     // The impostor signs, but targets the owner's business PDA and claims
     // (falsely) to be its authority.

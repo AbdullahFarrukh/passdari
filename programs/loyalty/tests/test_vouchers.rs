@@ -14,7 +14,7 @@ use {
     solana_keccak_hasher as keccak,
 };
 
-fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda: Pubkey, stamps_required: u8) {
+fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Keypair, business_pda: Pubkey, stamps_required: u8) {
     let instruction = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::RegisterBusiness {
@@ -30,13 +30,14 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda
         loyalty::accounts::RegisterBusiness {
             business: business_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let blockhash = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[instruction], Some(&owner.pubkey()), &blockhash);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let msg = Message::new_with_blockhash(&[instruction], Some(&relayer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner, relayer]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "setup registration should succeed");
 }
 
@@ -63,13 +64,14 @@ fn issue_and_claim(
             business: business_pda,
             receipt: receipt_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let bh1 = svm.latest_blockhash();
-    let msg1 = Message::new_with_blockhash(&[issue_ix], Some(&owner.pubkey()), &bh1);
-    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[owner]).unwrap();
+    let msg1 = Message::new_with_blockhash(&[issue_ix], Some(&relayer.pubkey()), &bh1);
+    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[owner, relayer]).unwrap();
     assert!(svm.send_transaction(tx1).is_ok(), "setup issue should succeed");
 
     let (card_pda, _) = Pubkey::find_program_address(
@@ -176,7 +178,7 @@ fn setup_base(svm: &mut LiteSVM, program_id: Pubkey, stamps_required: u8) -> (Ke
     svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
     let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(svm, program_id, &owner, business_pda, stamps_required);
+    register(svm, program_id, &owner, &relayer, business_pda, stamps_required);
     (owner, customer, relayer, business_pda)
 }
 
@@ -307,8 +309,8 @@ fn test_cross_business_redeem_fails() {
 
     let (business_a, _) = Pubkey::find_program_address(&[b"business", owner_a.pubkey().as_ref()], &program_id);
     let (business_b, _) = Pubkey::find_program_address(&[b"business", owner_b.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner_a, business_a, 1);
-    register(&mut svm, program_id, &owner_b, business_b, 1);
+    register(&mut svm, program_id, &owner_a, &relayer, business_a, 1);
+    register(&mut svm, program_id, &owner_b, &relayer, business_b, 1);
 
     fill_card(&mut svm, program_id, &owner_a, business_a, &customer, &relayer, 1);
     let voucher_pda = mint(&mut svm, program_id, business_a, &customer, &relayer, 0); // minted at A

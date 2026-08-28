@@ -14,7 +14,7 @@ use {
     solana_keccak_hasher as keccak,
 };
 
-fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda: Pubkey) {
+fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Keypair, business_pda: Pubkey) {
     let instruction = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::RegisterBusiness {
@@ -30,13 +30,14 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, business_pda
         loyalty::accounts::RegisterBusiness {
             business: business_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let blockhash = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[instruction], Some(&owner.pubkey()), &blockhash);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let msg = Message::new_with_blockhash(&[instruction], Some(&relayer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner, relayer]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "setup registration should succeed");
 }
 
@@ -50,6 +51,7 @@ fn issue_receipt(
     svm: &mut LiteSVM,
     program_id: Pubkey,
     owner: &Keypair,
+    relayer: &Keypair,
     business_pda: Pubkey,
     secret_hash: [u8; 32],
     amount_band: u8,
@@ -65,13 +67,14 @@ fn issue_receipt(
             business: business_pda,
             receipt: receipt_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix], Some(&owner.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner]).unwrap();
+    let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner, relayer]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "setup issue should succeed");
     receipt_pda
 }
@@ -85,7 +88,7 @@ fn setup_base(svm: &mut LiteSVM, program_id: Pubkey) -> (Keypair, Keypair, Keypa
     svm.airdrop(&customer.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
     let (business_pda, _) = Pubkey::find_program_address(&[b"business", owner.pubkey().as_ref()], &program_id);
-    register(svm, program_id, &owner, business_pda);
+    register(svm, program_id, &owner, &relayer, business_pda);
     (owner, customer, relayer, business_pda)
 }
 
@@ -122,11 +125,11 @@ fn claim(
 fn test_claim_receipt_first_stamp_creates_card() {
     let program_id = loyalty::id();
     let mut svm = LiteSVM::new();
-    let (_owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id);
 
     let secret = [1u8; 32];
     let secret_hash = keccak::hash(secret.as_ref()).to_bytes();
-    let receipt_pda = issue_receipt(&mut svm, program_id, &_owner, business_pda, secret_hash, 1);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, secret_hash, 1);
 
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
@@ -154,14 +157,14 @@ fn test_claim_receipt_second_stamp_reuses_card() {
 
     let secret1 = [1u8; 32];
     let hash1 = keccak::hash(secret1.as_ref()).to_bytes();
-    let receipt1 = issue_receipt(&mut svm, program_id, &owner, business_pda, hash1, 1);
+    let receipt1 = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, hash1, 1);
     assert!(claim(&mut svm, program_id, business_pda, receipt1, card_pda, &customer, &relayer, secret1).is_ok());
 
     warp(&mut svm, 61); // clear the stamp cooldown
 
     let secret2 = [2u8; 32];
     let hash2 = keccak::hash(secret2.as_ref()).to_bytes();
-    let receipt2 = issue_receipt(&mut svm, program_id, &owner, business_pda, hash2, 1);
+    let receipt2 = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, hash2, 1);
     let res = claim(&mut svm, program_id, business_pda, receipt2, card_pda, &customer, &relayer, secret2);
     assert!(res.is_ok(), "second claim should succeed and reuse the same card");
 
@@ -178,7 +181,7 @@ fn test_claim_receipt_twice_fails() {
 
     let secret = [1u8; 32];
     let secret_hash = keccak::hash(secret.as_ref()).to_bytes();
-    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, business_pda, secret_hash, 1);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, secret_hash, 1);
 
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
@@ -199,7 +202,7 @@ fn test_claim_receipt_wrong_secret_fails() {
 
     let real_secret = [1u8; 32];
     let secret_hash = keccak::hash(real_secret.as_ref()).to_bytes();
-    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, business_pda, secret_hash, 1);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, secret_hash, 1);
 
     let (card_pda, _) = Pubkey::find_program_address(
         &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
@@ -219,7 +222,7 @@ fn test_claim_receipt_expired_fails() {
 
     let secret = [1u8; 32];
     let secret_hash = keccak::hash(secret.as_ref()).to_bytes();
-    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, business_pda, secret_hash, 1);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, secret_hash, 1);
 
     warp(&mut svm, 301); // past the 300-second receipt_ttl_seconds used in registration
 
@@ -248,12 +251,12 @@ fn test_claim_receipt_cross_tenant_fails() {
 
     let (business_a, _) = Pubkey::find_program_address(&[b"business", owner_a.pubkey().as_ref()], &program_id);
     let (business_b, _) = Pubkey::find_program_address(&[b"business", owner_b.pubkey().as_ref()], &program_id);
-    register(&mut svm, program_id, &owner_a, business_a);
-    register(&mut svm, program_id, &owner_b, business_b);
+    register(&mut svm, program_id, &owner_a, &relayer, business_a);
+    register(&mut svm, program_id, &owner_b, &relayer, business_b);
 
     let secret = [1u8; 32];
     let secret_hash = keccak::hash(secret.as_ref()).to_bytes();
-    let receipt_pda = issue_receipt(&mut svm, program_id, &owner_a, business_a, secret_hash, 1);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner_a, &relayer, business_a, secret_hash, 1);
 
     // Try to claim business A's receipt against business B's card.
     let (card_pda_b, _) = Pubkey::find_program_address(

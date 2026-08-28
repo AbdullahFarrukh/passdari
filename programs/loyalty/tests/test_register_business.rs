@@ -16,10 +16,12 @@ use {
 fn test_register_business() {
     let program_id = loyalty::id();
     let authority = Keypair::new();
+    let relayer = Keypair::new();
     let mut svm = LiteSVM::new();
     let bytes = include_bytes!("../../../target/deploy/loyalty.so");
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&authority.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_pda, _bump) = Pubkey::find_program_address(
         &[b"business", authority.pubkey().as_ref()],
@@ -41,14 +43,15 @@ fn test_register_business() {
         loyalty::accounts::RegisterBusiness {
             business: business_pda,
             authority: authority.pubkey(),
+            relayer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
     );
 
     let blockhash = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[instruction], Some(&authority.pubkey()), &blockhash);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[authority]).unwrap();
+    let msg = Message::new_with_blockhash(&[instruction], Some(&relayer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[authority, relayer]).unwrap();
 
     let res = svm.send_transaction(tx);
     assert!(res.is_ok(), "register_business should succeed: {:?}", res);
@@ -59,10 +62,12 @@ fn test_register_business() {
 fn test_register_business_twice_fails() {
     let program_id = loyalty::id();
     let authority = Keypair::new();
+    let relayer = Keypair::new();
     let mut svm = LiteSVM::new();
     let bytes = include_bytes!("../../../target/deploy/loyalty.so");
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&authority.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let (business_pda, _bump) = Pubkey::find_program_address(
         &[b"business", authority.pubkey().as_ref()],
@@ -85,6 +90,7 @@ fn test_register_business_twice_fails() {
             loyalty::accounts::RegisterBusiness {
                 business: business_pda,
                 authority: authority.pubkey(),
+                relayer: relayer.pubkey(),
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
@@ -93,15 +99,15 @@ fn test_register_business_twice_fails() {
 
     // First registration: should succeed.
     let blockhash = svm.latest_blockhash();
-    let msg1 = Message::new_with_blockhash(&[build_instruction()], Some(&authority.pubkey()), &blockhash);
-    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&authority]).unwrap();
+    let msg1 = Message::new_with_blockhash(&[build_instruction()], Some(&relayer.pubkey()), &blockhash);
+    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&authority, &relayer]).unwrap();
     let res1 = svm.send_transaction(tx1);
     assert!(res1.is_ok(), "first registration should succeed: {:?}", res1);
 
     // Second registration, same wallet, same PDA: must fail.
     let blockhash2 = svm.latest_blockhash();
-    let msg2 = Message::new_with_blockhash(&[build_instruction()], Some(&authority.pubkey()), &blockhash2);
-    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&authority]).unwrap();
+    let msg2 = Message::new_with_blockhash(&[build_instruction()], Some(&relayer.pubkey()), &blockhash2);
+    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&authority, &relayer]).unwrap();
     let res2 = svm.send_transaction(tx2);
     assert!(res2.is_err(), "second registration should fail, but it succeeded");
 }
@@ -117,10 +123,12 @@ fn test_multiple_businesses_dont_collide() {
     let cafe = Keypair::new();
     let bakery = Keypair::new();
     let restaurant = Keypair::new();
+    let relayer = Keypair::new();
 
     svm.airdrop(&cafe.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&bakery.pubkey(), 1_000_000_000).unwrap();
     svm.airdrop(&restaurant.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&relayer.pubkey(), 1_000_000_000).unwrap();
 
     let owners = [
         (&cafe, "Coffee Corner", "cafe", "Free coffee", 10u8, 100_000u64),
@@ -150,14 +158,15 @@ fn test_multiple_businesses_dont_collide() {
             loyalty::accounts::RegisterBusiness {
                 business: business_pda,
                 authority: owner.pubkey(),
+                relayer: relayer.pubkey(),
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
         );
 
         let blockhash = svm.latest_blockhash();
-        let msg = Message::new_with_blockhash(&[instruction], Some(&owner.pubkey()), &blockhash);
-        let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[*owner]).unwrap();
+        let msg = Message::new_with_blockhash(&[instruction], Some(&relayer.pubkey()), &blockhash);
+        let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[*owner, &relayer]).unwrap();
         let res = svm.send_transaction(tx);
         assert!(res.is_ok(), "registering {} should succeed: {:?}", name, res);
     }

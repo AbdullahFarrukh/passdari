@@ -16,15 +16,21 @@ pub struct IssueReceipt<'info> {
 
     #[account(
         init,
-        payer = authority,
+        payer = relayer,
         space = 8 + Receipt::INIT_SPACE,
         seeds = [b"receipt", business.key().as_ref(), secret_hash.as_ref()],
         bump
     )]
     pub receipt: Account<'info, Receipt>,
 
-    #[account(mut)]
+    /// The merchant issuing this receipt. Signs to prove it's really them
+    /// and to satisfy the has_one check above, but pays nothing.
     pub authority: Signer<'info>,
+
+    /// The relayer, covering the receipt account's rent on the merchant's
+    /// behalf.
+    #[account(mut)]
+    pub relayer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }

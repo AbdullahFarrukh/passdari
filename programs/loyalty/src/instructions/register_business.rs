@@ -5,15 +5,22 @@ use crate::state::Business;
 pub struct RegisterBusiness<'info> {
     #[account(
         init,
-        payer = authority,
+        payer = relayer,
         space = 8 + Business::INIT_SPACE,
         seeds = [b"business", authority.key().as_ref()],
         bump
     )]
     pub business: Account<'info, Business>,
 
-    #[account(mut)]
+    /// The merchant registering this business. Signs to prove it's really
+    /// them — their identity is baked directly into the business's own
+    /// address — but pays nothing.
     pub authority: Signer<'info>,
+
+    /// The relayer, covering the business account's rent on the merchant's
+    /// behalf.
+    #[account(mut)]
+    pub relayer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
 }
