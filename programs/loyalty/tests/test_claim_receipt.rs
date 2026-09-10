@@ -171,6 +171,15 @@ fn test_claim_receipt_second_stamp_reuses_card() {
     let card_account = svm.get_account(&card_pda).unwrap();
     let card = loyalty::LoyaltyCard::try_deserialize(&mut card_account.data.as_slice()).unwrap();
     assert_eq!(card.stamps, 2, "card should now have 2 stamps");
+
+    
+    let business_account = svm.get_account(&business_pda).unwrap();
+    let business_data = loyalty::Business::try_deserialize(&mut business_account.data.as_slice()).unwrap();
+    assert_eq!(
+        business_data.total_cards, 1,
+        "two claims by the same customer at the same business should leave total_cards at 1, not 2"
+    );
+    
 }
 
 #[test]
