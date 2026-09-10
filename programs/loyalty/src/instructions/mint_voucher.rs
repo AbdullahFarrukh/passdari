@@ -8,10 +8,10 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64) -> Resul
     let voucher = &mut ctx.accounts.voucher;
     let clock = Clock::get()?;
 
-    require_eq!(voucher_id, business.total_vouchers_issued, ErrorCode::InvalidVoucherId);
-    require!(card.stamps >= business.stamps_required, ErrorCode::NotEnoughStamps);
+        require_eq!(voucher_id, business.total_vouchers_issued, ErrorCode::InvalidVoucherId);
+    require!(card.stamps >= card.stamps_required_snapshot, ErrorCode::NotEnoughStamps);
 
-    card.stamps -= business.stamps_required;
+    card.stamps -= card.stamps_required_snapshot;
 
     voucher.business = business.key();
     voucher.owner = ctx.accounts.customer.key();

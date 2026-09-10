@@ -19,10 +19,11 @@ pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Re
 
     require!(clock.unix_timestamp <= receipt.expires_at, ErrorCode::ReceiptExpired);
 
-        if card.business == Pubkey::default() {
+         if card.business == Pubkey::default() {
         card.business = business.key();
         card.customer = ctx.accounts.customer.key();
         card.bump = ctx.bumps.card;
+        card.stamps_required_snapshot = business.stamps_required;
         business.total_cards += 1;
     }
 

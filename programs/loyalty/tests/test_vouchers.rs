@@ -182,6 +182,14 @@ fn setup_base(svm: &mut LiteSVM, program_id: Pubkey, stamps_required: u8) -> (Ke
     (owner, customer, relayer, business_pda)
 }
 
+fn card_pda_for(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey) -> Pubkey {
+    let (card_pda, _) = Pubkey::find_program_address(
+        &[b"card", business_pda.as_ref(), customer.as_ref()],
+        &program_id,
+    );
+    card_pda
+}
+
 // --- Test 1: a merchant cannot reduce a card's stamps by any instruction ---
 #[test]
 fn test_redeem_does_not_touch_card_stamps() {
@@ -262,6 +270,70 @@ fn test_mint_voucher_below_threshold_fails() {
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&customer, &relayer]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "minting below the stamp threshold should fail, but it succeeded");
+}
+
+
+// --- Test: raising the threshold after a card exists does not retroactively lock it out ---
+#[test]
+fn test_raising_threshold_does_not_void_earned_reward() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 5);
+
+    // Customer earns exactly the 5 stamps required at registration time.
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 5);
+
+    // Merchant raises the threshold after the fact.
+    let update_ix = Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::UpdateBusinessConfig {
+            reward_label: "Free coffee".to_string(),
+            stamps_required: 20,
+            min_purchase_amount: 100_000,
+            receipt_ttl_seconds: 300,
+        }
+        .data(),
+        loyalty::accounts::UpdateBusinessConfig {
+            business: business_pda,
+            authority: owner.pubkey(),
+        }
+        .to_account_metas(None),
+    );
+    let bh = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[update_ix], Some(&owner.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
+    assert!(svm.send_transaction(tx).is_ok(), "raising the threshold should succeed");
+
+    // The customer, still sitting on only 5 stamps, should still be able to mint —
+    // the card locked in "5" at creation time, before the threshold changed.
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let (voucher_pda, _) = Pubkey::find_program_address(
+        &[b"voucher", business_pda.as_ref(), &0u64.to_le_bytes()],
+        &program_id,
+    );
+
+    let mint_ix = Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::MintVoucher { voucher_id: 0u64 }.data(),
+        loyalty::accounts::MintVoucher {
+            business: business_pda,
+            card: card_pda,
+            voucher: voucher_pda,
+            customer: customer.pubkey(),
+            relayer: relayer.pubkey(),
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+    );
+    let bh2 = svm.latest_blockhash();
+    let msg2 = Message::new_with_blockhash(&[mint_ix], Some(&relayer.pubkey()), &bh2);
+    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&customer, &relayer]).unwrap();
+    let res = svm.send_transaction(tx2);
+    assert!(
+        res.is_ok(),
+        "a customer who already earned the original threshold must still be able to mint, even after the merchant raises it: {:?}",
+        res
+    );
 }
 
 // --- Test 3: redeem_voucher on a voucher that was never presented fails ---

@@ -53,6 +53,7 @@ pub struct LoyaltyCard {
     pub claims_this_window: u32,
     pub lifetime_stamps: u32,
     pub redemptions: u32,
+    pub stamps_required_snapshot: u8,
     pub bump: u8,
 }
 
