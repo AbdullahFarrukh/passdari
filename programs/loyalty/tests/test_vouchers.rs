@@ -214,13 +214,15 @@ fn test_redeem_does_not_touch_card_stamps() {
             voucher: voucher_pda,
             card: card_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[redeem_ix], Some(&owner.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
-    assert!(svm.send_transaction(tx).is_ok(), "redeem should succeed");
+    let msg = Message::new_with_blockhash(&[redeem_ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner, &relayer]).unwrap();
+        let res = svm.send_transaction(tx);
+    assert!(res.is_ok(), "redeem should succeed: {:?}", res);
 
     let card_after = svm.get_account(&card_pda).unwrap();
     let card_data_after = loyalty::LoyaltyCard::try_deserialize(&mut card_after.data.as_slice()).unwrap();
@@ -266,8 +268,6 @@ fn test_mint_voucher_below_threshold_fails() {
     assert!(res.is_err(), "minting below the stamp threshold should fail, but it succeeded");
 }
 
-
-// --- Test: raising the threshold after a card exists does not retroactively lock it out ---
 #[test]
 fn test_raising_threshold_does_not_void_earned_reward() {
     let program_id = loyalty::id();
@@ -344,12 +344,13 @@ fn test_redeem_unpresented_voucher_fails() {
             voucher: voucher_pda,
             card: card_pda,
             authority: owner.pubkey(),
+            relayer: relayer.pubkey(),
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix], Some(&owner.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
+    let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner, &relayer]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "redeeming an unpresented voucher should fail, but it succeeded");
 }
@@ -387,12 +388,13 @@ fn test_cross_business_redeem_fails() {
             voucher: voucher_pda,
             card: card_pda_a,
             authority: owner_b.pubkey(),
+            relayer: relayer.pubkey(),
         }
         .to_account_metas(None),
     );
     let bh = svm.latest_blockhash();
-    let msg = Message::new_with_blockhash(&[ix], Some(&owner_b.pubkey()), &bh);
-    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner_b]).unwrap();
+    let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner_b, &relayer]).unwrap();
     let res = svm.send_transaction(tx);
     assert!(res.is_err(), "business B must not redeem a voucher issued by business A");
 }
@@ -487,19 +489,20 @@ fn test_redeem_twice_fails() {
                 voucher: voucher_pda,
                 card: card_pda,
                 authority: owner.pubkey(),
+                relayer: relayer.pubkey(),
             }
             .to_account_metas(None),
         )
     };
 
     let bh1 = svm.latest_blockhash();
-    let msg1 = Message::new_with_blockhash(&[redeem_ix()], Some(&owner.pubkey()), &bh1);
-    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&owner]).unwrap();
+    let msg1 = Message::new_with_blockhash(&[redeem_ix()], Some(&relayer.pubkey()), &bh1);
+    let tx1 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg1), &[&owner, &relayer]).unwrap();
     assert!(svm.send_transaction(tx1).is_ok(), "first redemption should succeed");
 
     let bh2 = svm.latest_blockhash();
-    let msg2 = Message::new_with_blockhash(&[redeem_ix()], Some(&owner.pubkey()), &bh2);
-    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&owner]).unwrap();
+    let msg2 = Message::new_with_blockhash(&[redeem_ix()], Some(&relayer.pubkey()), &bh2);
+    let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&owner, &relayer]).unwrap();
     let res2 = svm.send_transaction(tx2);
     assert!(res2.is_err(), "redeeming the same voucher twice should fail — it was closed after the first redemption");
 }

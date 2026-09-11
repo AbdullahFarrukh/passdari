@@ -27,8 +27,14 @@ pub struct RedeemVoucher<'info> {
     )]
     pub card: Account<'info, LoyaltyCard>,
 
-    #[account(mut)]
+        #[account(mut)]
     pub authority: Signer<'info>,
+
+    /// Present purely as a required signer, matching every other
+    /// relayer-backed instruction's structure — not used inside the
+    /// handler itself, since redeeming doesn't create any account or need
+    /// a payer.
+    pub relayer: Signer<'info>,
 }
 
 pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
