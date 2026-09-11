@@ -115,7 +115,7 @@ fn fill_card(
 ) {
     for i in 0..stamps {
         issue_and_claim(svm, program_id, owner, business_pda, customer, relayer, 100u8.wrapping_add(i));
-        warp(svm, 61); // clear the stamp cooldown before the next claim
+        warp(svm, 61);
     }
 }
 
@@ -190,7 +190,6 @@ fn card_pda_for(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey) -> P
     card_pda
 }
 
-// --- Test 1: a merchant cannot reduce a card's stamps by any instruction ---
 #[test]
 fn test_redeem_does_not_touch_card_stamps() {
     let program_id = loyalty::id();
@@ -199,10 +198,7 @@ fn test_redeem_does_not_touch_card_stamps() {
 
     fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2);
 
-    let (card_pda, _) = Pubkey::find_program_address(
-        &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
-        &program_id,
-    );
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
 
     let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
@@ -216,6 +212,7 @@ fn test_redeem_does_not_touch_card_stamps() {
         loyalty::accounts::RedeemVoucher {
             business: business_pda,
             voucher: voucher_pda,
+            card: card_pda,
             authority: owner.pubkey(),
         }
         .to_account_metas(None),
@@ -226,27 +223,24 @@ fn test_redeem_does_not_touch_card_stamps() {
     assert!(svm.send_transaction(tx).is_ok(), "redeem should succeed");
 
     let card_after = svm.get_account(&card_pda).unwrap();
-    let stamps_after = loyalty::LoyaltyCard::try_deserialize(&mut card_after.data.as_slice()).unwrap().stamps;
+    let card_data_after = loyalty::LoyaltyCard::try_deserialize(&mut card_after.data.as_slice()).unwrap();
 
     assert_eq!(
-        stamps_before, stamps_after,
-        "redeeming a voucher must never change the card's stamp count — mint_voucher is the only place stamps decrease"
+        stamps_before, card_data_after.stamps,
+        "redeeming a voucher must never change the card's stamp count"
     );
+    assert_eq!(card_data_after.redemptions, 1, "the card's own redemption count should now be 1");
 }
 
-// --- Test 2: mint_voucher below the stamp threshold fails ---
 #[test]
 fn test_mint_voucher_below_threshold_fails() {
     let program_id = loyalty::id();
     let mut svm = LiteSVM::new();
     let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 5);
 
-    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2); // only 2 of 5 needed
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2);
 
-    let (card_pda, _) = Pubkey::find_program_address(
-        &[b"card", business_pda.as_ref(), customer.pubkey().as_ref()],
-        &program_id,
-    );
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
     let (voucher_pda, _) = Pubkey::find_program_address(
         &[b"voucher", business_pda.as_ref(), &0u64.to_le_bytes()],
         &program_id,
@@ -280,10 +274,8 @@ fn test_raising_threshold_does_not_void_earned_reward() {
     let mut svm = LiteSVM::new();
     let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 5);
 
-    // Customer earns exactly the 5 stamps required at registration time.
     fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 5);
 
-    // Merchant raises the threshold after the fact.
     let update_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
@@ -304,8 +296,6 @@ fn test_raising_threshold_does_not_void_earned_reward() {
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[&owner]).unwrap();
     assert!(svm.send_transaction(tx).is_ok(), "raising the threshold should succeed");
 
-    // The customer, still sitting on only 5 stamps, should still be able to mint —
-    // the card locked in "5" at creation time, before the threshold changed.
     let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
     let (voucher_pda, _) = Pubkey::find_program_address(
         &[b"voucher", business_pda.as_ref(), &0u64.to_le_bytes()],
@@ -336,7 +326,6 @@ fn test_raising_threshold_does_not_void_earned_reward() {
     );
 }
 
-// --- Test 3: redeem_voucher on a voucher that was never presented fails ---
 #[test]
 fn test_redeem_unpresented_voucher_fails() {
     let program_id = loyalty::id();
@@ -345,7 +334,7 @@ fn test_redeem_unpresented_voucher_fails() {
 
     fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
     let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
-    // Deliberately skip present_voucher.
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
 
     let ix = Instruction::new_with_bytes(
         program_id,
@@ -353,6 +342,7 @@ fn test_redeem_unpresented_voucher_fails() {
         loyalty::accounts::RedeemVoucher {
             business: business_pda,
             voucher: voucher_pda,
+            card: card_pda,
             authority: owner.pubkey(),
         }
         .to_account_metas(None),
@@ -364,7 +354,6 @@ fn test_redeem_unpresented_voucher_fails() {
     assert!(res.is_err(), "redeeming an unpresented voucher should fail, but it succeeded");
 }
 
-// --- Test 4: a merchant cannot redeem a voucher issued by a different business ---
 #[test]
 fn test_cross_business_redeem_fails() {
     let program_id = loyalty::id();
@@ -385,8 +374,10 @@ fn test_cross_business_redeem_fails() {
     register(&mut svm, program_id, &owner_b, &relayer, business_b, 1);
 
     fill_card(&mut svm, program_id, &owner_a, business_a, &customer, &relayer, 1);
-    let voucher_pda = mint(&mut svm, program_id, business_a, &customer, &relayer, 0); // minted at A
+    let voucher_pda = mint(&mut svm, program_id, business_a, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
+
+    let card_pda_a = card_pda_for(program_id, business_a, customer.pubkey());
 
     let ix = Instruction::new_with_bytes(
         program_id,
@@ -394,6 +385,7 @@ fn test_cross_business_redeem_fails() {
         loyalty::accounts::RedeemVoucher {
             business: business_b,
             voucher: voucher_pda,
+            card: card_pda_a,
             authority: owner_b.pubkey(),
         }
         .to_account_metas(None),
@@ -405,7 +397,6 @@ fn test_cross_business_redeem_fails() {
     assert!(res.is_err(), "business B must not redeem a voucher issued by business A");
 }
 
-// --- Test 5: after transfer, the old owner can no longer transfer or present it ---
 #[test]
 fn test_old_owner_locked_out_after_transfer() {
     let program_id = loyalty::id();
@@ -452,7 +443,6 @@ fn test_old_owner_locked_out_after_transfer() {
     assert!(res3.is_err(), "the old owner should not be able to transfer a voucher they no longer own");
 }
 
-// --- Test 6: transfer_voucher while pending fails ---
 #[test]
 fn test_transfer_while_pending_fails() {
     let program_id = loyalty::id();
@@ -477,7 +467,6 @@ fn test_transfer_while_pending_fails() {
     assert!(res.is_err(), "gifting a voucher that's currently presented to a merchant should fail");
 }
 
-// --- Test 7: redeeming twice fails (the voucher is closed) ---
 #[test]
 fn test_redeem_twice_fails() {
     let program_id = loyalty::id();
@@ -487,6 +476,7 @@ fn test_redeem_twice_fails() {
     fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
     let voucher_pda = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
     present(&mut svm, program_id, voucher_pda, &customer);
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
 
     let redeem_ix = || {
         Instruction::new_with_bytes(
@@ -495,6 +485,7 @@ fn test_redeem_twice_fails() {
             loyalty::accounts::RedeemVoucher {
                 business: business_pda,
                 voucher: voucher_pda,
+                card: card_pda,
                 authority: owner.pubkey(),
             }
             .to_account_metas(None),

@@ -4,14 +4,18 @@ use crate::error::ErrorCode;
 
 #[derive(Accounts)]
 pub struct ReclaimExpiredReceipt<'info> {
-    #[account(mut, close = authority, has_one = business)]
+    #[account(mut, close = relayer, has_one = business)]
     pub receipt: Account<'info, Receipt>,
 
     #[account(has_one = authority)]
     pub business: Account<'info, Business>,
 
-    #[account(mut)]
     pub authority: Signer<'info>,
+
+    /// The relayer, receiving back the rent it originally paid to create
+    /// this receipt — not the merchant, who never paid for it.
+    #[account(mut)]
+    pub relayer: Signer<'info>,
 }
 
 pub fn reclaim_expired_receipt_handler(ctx: Context<ReclaimExpiredReceipt>) -> Result<()> {
