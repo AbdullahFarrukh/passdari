@@ -1,4 +1,4 @@
-# StampCoin — Solana Receipt dApp (Program)
+# Passdari — Solana Receipt dApp (Program)
 
 A customer holds a transferable, unforgeable claim on a real reward — redeemable
 only with the issuing business's cooperation, without ever installing a wallet
