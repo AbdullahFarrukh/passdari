@@ -37,7 +37,7 @@ separate repo: [`stampcoin-app`](https://github.com/AbdullahFarrukh/stampcoin-ap
 
 **Program ID:** `HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL`
 
-**Network status: local only.** Every test and demo has run against a local Surfpool validator. This program has not yet been deployed to devnet.
+**Network status: live on devnet.** Program ID `HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL`, deployed via Helius's devnet RPC after the free public endpoint repeatedly failed on large deploys. Every Rust test still runs locally against LiteSVM — see "Build and test," above — but the actual deployed program is real, live, and independently verifiable on Solana Explorer.
 
 ---
 
