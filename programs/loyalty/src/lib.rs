@@ -69,12 +69,12 @@ pub mod loyalty {
         crate::instructions::claim_receipt::claim_receipt_handler(ctx, secret)
     }
 
-        pub fn mint_voucher(ctx: Context<MintVoucher>, voucher_id: u64) -> Result<()> {
-        crate::instructions::mint_voucher::mint_voucher_handler(ctx, voucher_id)
+        pub fn mint_voucher(ctx: Context<MintVoucher>, voucher_id: u64, uri: String) -> Result<()> {
+        crate::instructions::mint_voucher::mint_voucher_handler(ctx, voucher_id, uri)
     }
 
-    pub fn transfer_voucher(ctx: Context<TransferVoucher>, new_owner: Pubkey) -> Result<()> {
-        crate::instructions::transfer_voucher::transfer_voucher_handler(ctx, new_owner)
+    pub fn transfer_voucher(ctx: Context<TransferVoucher>) -> Result<()> {
+        crate::instructions::transfer_voucher::transfer_voucher_handler(ctx)
     }
 
     pub fn present_voucher(ctx: Context<PresentVoucher>) -> Result<()> {

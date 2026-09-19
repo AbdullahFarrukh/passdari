@@ -61,9 +61,13 @@ pub struct LoyaltyCard {
 #[derive(InitSpace)]
 pub struct Voucher {
     pub business: Pubkey,
+    /// The wallet that last received this voucher through `transfer_voucher`.
+    /// Only a hint so the app can list a customer's vouchers. A wallet can
+    /// move the NFT without telling us, so this can go stale. Never use it
+    /// for permission checks: the token account is the source of truth.
     pub owner: Pubkey,
+    pub mint: Pubkey,
     pub voucher_id: u64,
     pub minted_at: i64,
-    pub pending_redemption: bool,
     pub bump: u8,
 }

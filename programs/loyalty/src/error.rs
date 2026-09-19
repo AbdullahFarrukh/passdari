@@ -14,7 +14,7 @@ pub enum ErrorCode {
     InvalidVoucherId,
     #[msg("Not enough stamps to mint a voucher")]
     NotEnoughStamps,
-    #[msg("This voucher is currently presented for redemption and cannot be transferred")]
+    #[msg("This voucher is currently presented for redemption")]
     VoucherPending,
     #[msg("This voucher has not been presented for redemption")]
     VoucherNotPresented,
@@ -26,4 +26,8 @@ pub enum ErrorCode {
     ReceiptRateLimitExceeded,
     #[msg("This card has claimed too many stamps today")]
     ClaimRateLimitExceeded,
+    #[msg("The voucher metadata URI is too long")]
+    UriTooLong,
+    #[msg("This token account does not hold the voucher")]
+    NotVoucherHolder,
 }
