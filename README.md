@@ -1,6 +1,12 @@
 # Passdari — Solana Receipt dApp (Program)
 
-A customer holds a transferable, unforgeable claim on a real reward — redeemable
+**The problem.** Paper stamp cards get lost, get forged and can't be verified.
+App-based loyalty programs keep points in the business's own database, so
+customers don't truly own them and the business can change or erase them.
+Blockchain alternatives ask ordinary customers to install a wallet and hold
+crypto, which most won't do.
+
+**The solution.** A customer holds a transferable, unforgeable claim on a real reward — redeemable
 only with the issuing business's cooperation, without ever installing a wallet
 extension or holding any cryptocurrency themselves. Every fee and every account's
 rent is covered by a backend relayer, for both merchants and customers.
@@ -9,7 +15,9 @@ Underneath that: a digital replacement for the paper stamp card, built as one
 dApp serving many businesses. A merchant issues an unclaimed receipt on-chain at
 the moment of purchase; the customer scans it to claim a stamp; once enough
 stamps are collected, they mint a voucher for the free item — a real Token-2022
-NFT, which they can keep, gift to someone else, or redeem themselves.
+NFT, which they can keep, gift to someone else, or redeem themselves. The stamp
+card is an NFT too: a soulbound Token-2022 token that can't be sent to another
+wallet and is burned when its stamps are spent.
 
 **Why blockchain:** gift-card and loyalty fraud is a real, ongoing industry
 problem, and the two-party redemption handshake this app relies on — a merchant
@@ -24,6 +32,14 @@ silently erased by either side.
 This repo holds the on-chain Anchor program. The web frontend lives in a
 separate repo: [`passdari-app`](https://github.com/AbdullahFarrukh/passdari-app),
 running live at [passdari-app.vercel.app](https://passdari-app.vercel.app).
+
+| At a glance | |
+|---|---|
+| **Live app** | [passdari-app.vercel.app](https://passdari-app.vercel.app), running on Solana devnet |
+| **Repositories** | this repo (the on-chain program) and [`passdari-app`](https://github.com/AbdullahFarrukh/passdari-app) (the web app) |
+| **Program on Explorer** | [`HWvv…JCuL`](https://explorer.solana.com/address/HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL?cluster=devnet) |
+| **On-chain** | Rust, Anchor 1.0.2, Token-2022 NFTs (non-transferable, permanent delegate, on-chain metadata), tested with LiteSVM |
+| **Web app** | Next.js 16, React 19, TypeScript, Tailwind CSS 4, `@solana/web3.js`, Anchor TypeScript client, BIP-39 keys with TweetNaCl, QR scan and generate, Upstash Redis, Google Gemini (merchant AI copilot), Helius RPC, Vercel |
 
 ---
 
@@ -63,12 +79,12 @@ account are closed and their rent goes back to the relayer.
 
 ## Account model
 
-Business — one per merchant wallet, holds reward terms and running counters
-LoyaltyCard — one per (business, customer) pair, holds stamp count and a locked-in copy of the threshold it was created under
-Receipt — one per issued QR code, closed on claim
-Voucher — one per minted reward: the on-chain record of a voucher NFT (which business, which id, which mint). Closed on redemption.
-Voucher NFT — a Token-2022 mint (one per voucher) with exactly one token, held in the customer's own token account. The token is the source of truth for who owns the voucher.
-Card NFT — a Token-2022 mint with one token that can't be moved out of the customer's wallet. A card has one at a time; it is burned when the card's stamps are spent.
+- **Business**: one per merchant wallet, holds reward terms and running counters
+- **LoyaltyCard**: one per (business, customer) pair, holds the stamp count and a locked-in copy of the threshold it was created under
+- **Receipt**: one per issued QR code, closed on claim
+- **Voucher**: one per minted reward, the on-chain record of a voucher NFT (which business, which id, which mint). Closed on redemption.
+- **Voucher NFT**: a Token-2022 mint (one per voucher) with exactly one token, held in the customer's own token account. The token is the source of truth for who owns the voucher.
+- **Card NFT**: a Token-2022 mint with one token that can't be moved out of the customer's wallet. A card has one at a time; it is burned when the card's stamps are spent.
 
 There is no `Customer` account, and no `Merchant` account either — both sides
 authenticate the same way: a local Solana keypair, generated from a real BIP-39
@@ -93,7 +109,9 @@ metadata stored inside the mint itself (metadata pointer plus token metadata),
 so it shows up with a name in explorers and wallets. The name is built on-chain
 from the business and its reward (for example `Blue Door Cafe - Free coffee`),
 the symbol is `PSDR`, and the metadata link is passed in by the client, capped
-at 100 characters.
+at 100 characters. The link points at a small page in the web app that returns a
+description and a picture (a static PNG, `public/nft/passdari-voucher.png`), so the
+picture costs nothing on-chain, and NFTs already minted through the live site pick it up without any change.
 
 The mint is a PDA, and the **voucher account is its freeze authority, its
 permanent delegate, and the update authority of its metadata**. The right to
@@ -126,7 +144,8 @@ redeeming about 20,000.
 
 Each stamp card also comes as a Token-2022 NFT: 0 decimals, a supply of exactly 1,
 metadata inside the mint (name built on-chain as `<business> stamp card`, symbol
-`PSDC`, link passed in by the client and capped at 100 characters). It is
+`PSDC`, link passed in by the client and capped at 100 characters; the link's page
+returns a picture too, `public/nft/passdari-card.png`). It is
 **soulbound**: the mint has the non-transferable extension, so the token program
 itself refuses to move it out of the customer's wallet. The **card account is its
 mint authority (given up right after minting), its permanent delegate and its close
@@ -226,7 +245,7 @@ support everything used here.
 - Staff delegate keys, so a tablet at the counter can't approve redemptions with the owner's own key
 - Ed25519 signature verification for receipts
 - Voucher expiry dates
-- An image for the voucher and card NFTs' metadata (today they have a name, a symbol and a link, but no picture)
+- Host the NFT pictures somewhere permanent (today the web app serves them, one picture for all vouchers and one for all cards, so they depend on it staying up; ownership itself stays on-chain)
 - Closing a burned voucher's mint to recover its rent (today it is left on-chain as a record)
 - A way for a merchant to deregister a business (currently leaves an orphaned account)
 
