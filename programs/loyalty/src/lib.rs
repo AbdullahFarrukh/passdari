@@ -69,6 +69,10 @@ pub mod loyalty {
         crate::instructions::claim_receipt::claim_receipt_handler(ctx, secret)
     }
 
+        pub fn mint_card_nft(ctx: Context<MintCardNft>, uri: String) -> Result<()> {
+        crate::instructions::mint_card_nft::mint_card_nft_handler(ctx, uri)
+    }
+
         pub fn mint_voucher(ctx: Context<MintVoucher>, voucher_id: u64, uri: String) -> Result<()> {
         crate::instructions::mint_voucher::mint_voucher_handler(ctx, voucher_id, uri)
     }

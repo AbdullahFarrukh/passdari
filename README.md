@@ -57,6 +57,10 @@ A voucher costs the relayer about 0.008 SOL (measured): the voucher account, the
 NFT's mint, and the customer's token account. When a voucher is redeemed, the
 voucher account's rent goes to the merchant.
 
+A stamp card's NFT costs the relayer about 0.006 SOL (measured) while it exists,
+and all of it comes back when the card is cashed in: the NFT's mint and token
+account are closed and their rent goes back to the relayer.
+
 ## Account model
 
 Business — one per merchant wallet, holds reward terms and running counters
@@ -64,6 +68,7 @@ LoyaltyCard — one per (business, customer) pair, holds stamp count and a locke
 Receipt — one per issued QR code, closed on claim
 Voucher — one per minted reward: the on-chain record of a voucher NFT (which business, which id, which mint). Closed on redemption.
 Voucher NFT — a Token-2022 mint (one per voucher) with exactly one token, held in the customer's own token account. The token is the source of truth for who owns the voucher.
+Card NFT — a Token-2022 mint with one token that can't be moved out of the customer's wallet. A card has one at a time; it is burned when the card's stamps are spent.
 
 There is no `Customer` account, and no `Merchant` account either — both sides
 authenticate the same way: a local Solana keypair, generated from a real BIP-39
@@ -79,6 +84,7 @@ object lives and check it on Solana Explorer:
 | Receipt | `"receipt"`, the business, the hash of the receipt's secret |
 | Voucher | `"voucher"`, the business, the voucher id (u64, little-endian) |
 | Voucher NFT (mint) | `"voucher_mint"`, the business, the voucher id |
+| Card NFT (mint) | `"card_mint"`, the card, the card's `nft_cycle` (u32, little-endian) |
 
 ## The voucher NFT
 
@@ -110,12 +116,51 @@ Two design points worth knowing:
   cancel and redeem all check the token account instead.
 - **Redeeming needs no card.** `redeem_voucher` doesn't touch the customer's
   `LoyaltyCard`, so a voucher gifted to someone who never earned a stamp at that
-  business still redeems. Redemptions are counted on the business
-  (`LoyaltyCard.redemptions` is no longer updated).
+  business still redeems. Redemptions are counted on the business.
 
 A burned voucher leaves its mint on-chain with a supply of 0, as a permanent
 record. Measured in the tests: minting costs about 69,000 compute units and
 redeeming about 20,000.
+
+## The card NFT
+
+Each stamp card also comes as a Token-2022 NFT: 0 decimals, a supply of exactly 1,
+metadata inside the mint (name built on-chain as `<business> stamp card`, symbol
+`PSDC`, link passed in by the client and capped at 100 characters). It is
+**soulbound**: the mint has the non-transferable extension, so the token program
+itself refuses to move it out of the customer's wallet. The **card account is its
+mint authority (given up right after minting), its permanent delegate and its close
+authority**. There is no freeze authority.
+
+| Instruction | What happens to the card NFT |
+|---|---|
+| `mint_card_nft(uri)` | Creates the mint and the customer's token account, mints 1 token, then locks minting. The customer signs; the relayer pays |
+| `mint_voucher` | Spends the card's stamps, then burns the card NFT through the permanent delegate, closes its accounts (rent back to the relayer) and moves the card on to its next NFT |
+
+How it fits together:
+
+- **One transaction.** The app sends `claim_receipt` and `mint_card_nft` together
+  when the card's current NFT doesn't exist yet, so the customer signs once. A card
+  gets its NFT with its first stamp.
+- **The live stamp count stays in the card account,** not in the token. The token
+  proves "this wallet holds a card from this business"; the account says how many
+  stamps it has.
+- **Each NFT gets a fresh address.** It comes from the card and `nft_cycle`, a
+  counter on the card that goes up each time the NFT is burned. (`nft_cycle` reuses
+  the old, unused `redemptions` field, so cards made earlier keep working.) Leftover
+  stamps stay on the card, and the next stamp brings a new NFT.
+- **Cards made before this existed** have no NFT. They can still cash in (the burn is
+  skipped when nothing is there) and get one with their next stamp.
+- **Cashing in can't get stuck on the NFT.** A holder can burn their own card token
+  or close its token account; cashing in still works and cleans up what is left. The
+  addresses passed in are checked against the card's real ones, so they can't be
+  swapped to dodge the burn.
+- **Pre-funding the address doesn't block it.** Anyone can send lamports to the mint's
+  address in advance, since it is easy to work out. The mint is created in steps
+  (transfer, allocate, assign) so that can't stop a card from getting its NFT.
+
+Measured in the tests: `claim_receipt` plus `mint_card_nft` together use about
+88,000 compute units, and `mint_voucher` with a card NFT to burn about 93,000.
 
 ## Trust model
 
@@ -124,10 +169,11 @@ redeeming about 20,000.
   that business's own authority. The holder can cancel any time before
   redemption. A frozen token can't be moved by anyone, including from a wallet —
   the token program itself refuses.
-- **The permanent delegate can't be abused.** It is this program's own voucher
-  account, which only signs inside `mint_voucher`, `present_voucher`,
-  `cancel_presentation` and `redeem_voucher`. No instruction lets anyone else use
-  it. Wallets and explorers may show a warning that the token has a permanent
+- **The permanent delegates can't be abused.** For a voucher it is this program's
+  own voucher account, which only signs inside `mint_voucher`, `present_voucher`,
+  `cancel_presentation` and `redeem_voucher`. For a card NFT it is the card account,
+  which only signs inside `mint_card_nft` and `mint_voucher`. No instruction lets
+  anyone else use either. Wallets and explorers may show a warning that the token has a permanent
   delegate; that is expected.
 - **The customer can't claim without the merchant.** Unchanged: a receipt is
   created by the merchant and can be claimed once.
@@ -136,7 +182,7 @@ redeeming about 20,000.
 
 ## Instructions
 
-`register_business` · `update_business_config` · `issue_receipt` · `claim_receipt` · `mint_voucher` · `transfer_voucher` · `present_voucher` · `redeem_voucher` · `cancel_presentation` · `reclaim_expired_receipt`
+`register_business` · `update_business_config` · `issue_receipt` · `claim_receipt` · `mint_card_nft` · `mint_voucher` · `transfer_voucher` · `present_voucher` · `redeem_voucher` · `cancel_presentation` · `reclaim_expired_receipt`
 
 There is also `initialize`, which creates a counter. It is left over from the
 project template and the app doesn't use it.
@@ -153,7 +199,7 @@ Run `anchor build` first: the tests load the compiled program from
 
 ## Test coverage
 
-34 tests across 7 files, all currently passing:
+46 tests across 8 files, all currently passing:
 
 | File | Tests | Covers |
 |---|---|---|
@@ -162,6 +208,7 @@ Run `anchor build` first: the tests load the compiled program from
 | `test_update_business_config.rs` | 2 | Owner can update, impostor cannot |
 | `test_issue_receipt.rs` | 3 | Issuance, zero-band rejection, unregistered-wallet rejection |
 | `test_claim_receipt.rs` | 6 | First/repeat claims, double-claim, wrong secret, expiry, cross-tenant isolation |
+| `test_card_nft.rs` | 12 | The card NFT (supply, authorities, soulbound, name and symbol), a wallet can't move it, cashing in burns it and keeps leftover stamps, the next stamp brings a fresh one, cards without an NFT still cash in, a holder who burned their own card can still cash in, nobody can dodge the burn or mint for someone else's card, a pre-funded address doesn't block it, and the relayer gets all the rent back |
 | `test_vouchers.rs` | 17 | The NFT itself (supply, authorities, metadata), presenting freezes and cancelling thaws, gifting moves the real token, a wallet can't move a presented voucher, redeeming burns it, a gifted voucher redeems without a card, and the failure cases (below the stamp threshold, unpresented, wrong business, redeemed twice). Also: raising the reward threshold never voids a card's already-earned reward — see file for details |
 | `lib.rs` (built-in) | 1 | Program ID sanity check |
 
@@ -176,11 +223,10 @@ support everything used here.
 
 ## What we'd build next
 
-- Card NFTs: a soulbound (non-transferable) NFT per stamp card, burned when its stamps are spent
 - Staff delegate keys, so a tablet at the counter can't approve redemptions with the owner's own key
 - Ed25519 signature verification for receipts
 - Voucher expiry dates
-- An image for the voucher NFT's metadata (today it has a name, a symbol and a link, but no picture)
+- An image for the voucher and card NFTs' metadata (today they have a name, a symbol and a link, but no picture)
 - Closing a burned voucher's mint to recover its rent (today it is left on-chain as a record)
 - A way for a merchant to deregister a business (currently leaves an orphaned account)
 

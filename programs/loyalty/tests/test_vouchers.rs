@@ -178,15 +178,21 @@ fn ata(wallet: Pubkey, mint: Pubkey) -> Pubkey {
 
 fn mint_voucher_ix(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey, relayer: Pubkey, voucher_id: u64, uri: &str) -> Instruction {
     let mint = mint_pda_for(program_id, business_pda, voucher_id);
+    // These cards have no NFT (they were only stamped), so the card-NFT accounts point at addresses
+    // where nothing exists yet, and cashing in skips that step.
+    let card = card_pda_for(program_id, business_pda, customer);
+    let card_mint = Pubkey::find_program_address(&[b"card_mint", card.as_ref(), &0u32.to_le_bytes()], &program_id).0;
     Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::MintVoucher { voucher_id, uri: uri.to_string() }.data(),
         loyalty::accounts::MintVoucher {
             business: business_pda,
-            card: card_pda_for(program_id, business_pda, customer),
+            card,
             voucher: voucher_pda_for(program_id, business_pda, voucher_id),
             mint,
             customer_token: ata(customer, mint),
+            card_mint,
+            card_token: ata(customer, card_mint),
             customer,
             relayer,
             token_program: spl_token_2022::ID,

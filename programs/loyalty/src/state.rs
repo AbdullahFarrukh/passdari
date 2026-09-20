@@ -52,7 +52,11 @@ pub struct LoyaltyCard {
     pub claims_window_start: i64,
     pub claims_this_window: u32,
     pub lifetime_stamps: u32,
-    pub redemptions: u32,
+    /// Which card NFT is the current one. Part of the NFT's mint address, so a
+    /// fresh NFT gets a fresh address each time the last one is burned. This
+    /// used to be `redemptions` (unused since vouchers became NFTs); the size
+    /// is the same, so cards that already exist keep working.
+    pub nft_cycle: u32,
     pub stamps_required_snapshot: u8,
     pub bump: u8,
 }
