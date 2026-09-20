@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -5,7 +8,7 @@ use {
         AccountDeserialize,
         InstructionData, ToAccountMetas,
     },
-    litesvm::LiteSVM,
+    litesvm::{types::TransactionResult, LiteSVM},
     solana_clock::Clock,
     solana_message::{Message, VersionedMessage},
     solana_signer::Signer,
@@ -101,7 +104,7 @@ fn claim(
     customer: &Keypair,
     relayer: &Keypair,
     secret: [u8; 32],
-) -> Result<(), ()> {
+) -> TransactionResult {
     let ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::ClaimReceipt { secret }.data(),
@@ -115,10 +118,13 @@ fn claim(
         }
         .to_account_metas(None),
     );
+    // A fresh blockhash every time: claiming the same receipt twice sends the same transaction twice, and LiteSVM
+    // would refuse the repeat as "AlreadyProcessed" before the program ever ran.
+    svm.expire_blockhash();
     let bh = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &bh);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[customer, relayer]).unwrap();
-    svm.send_transaction(tx).map(|_| ()).map_err(|_| ())
+    svm.send_transaction(tx)
 }
 
 #[test]
@@ -200,7 +206,7 @@ fn test_claim_receipt_twice_fails() {
     assert!(claim(&mut svm, program_id, business_pda, receipt_pda, card_pda, &customer, &relayer, secret).is_ok());
 
     let res = claim(&mut svm, program_id, business_pda, receipt_pda, card_pda, &customer, &relayer, secret);
-    assert!(res.is_err(), "claiming the same receipt twice should fail — it was closed after the first claim");
+    assert_fails_with(res, "AccountNotInitialized");
 }
 
 #[test]
@@ -220,7 +226,7 @@ fn test_claim_receipt_wrong_secret_fails() {
 
     let wrong_secret = [99u8; 32];
     let res = claim(&mut svm, program_id, business_pda, receipt_pda, card_pda, &customer, &relayer, wrong_secret);
-    assert!(res.is_err(), "claiming with the wrong secret should fail");
+    assert_fails_with(res, "InvalidSecret");
 }
 
 #[test]
@@ -241,7 +247,7 @@ fn test_claim_receipt_expired_fails() {
     );
 
     let res = claim(&mut svm, program_id, business_pda, receipt_pda, card_pda, &customer, &relayer, secret);
-    assert!(res.is_err(), "claiming an expired receipt should fail");
+    assert_fails_with(res, "ReceiptExpired");
 }
 
 #[test]
@@ -274,5 +280,5 @@ fn test_claim_receipt_cross_tenant_fails() {
     );
 
     let res = claim(&mut svm, program_id, business_b, receipt_pda, card_pda_b, &customer, &relayer, secret);
-    assert!(res.is_err(), "a receipt from business A must not stamp a card at business B");
+    assert_fails_with(res, "InvalidSecret");
 }

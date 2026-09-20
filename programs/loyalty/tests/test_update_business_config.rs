@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -124,5 +127,5 @@ fn test_impostor_cannot_update_config() {
     let msg = Message::new_with_blockhash(&[update_ix], Some(&impostor.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[impostor]).unwrap();
     let res = svm.send_transaction(tx);
-    assert!(res.is_err(), "impostor's update should have been rejected, but it succeeded");
+    assert_fails_with(res, "ConstraintSeeds");
 }

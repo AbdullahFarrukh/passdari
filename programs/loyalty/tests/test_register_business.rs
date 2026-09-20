@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -104,12 +107,14 @@ fn test_register_business_twice_fails() {
     let res1 = svm.send_transaction(tx1);
     assert!(res1.is_ok(), "first registration should succeed: {:?}", res1);
 
-    // Second registration, same wallet, same PDA: must fail.
+    // Second registration, same wallet, same PDA: must fail. It is the same transaction again, so it needs a
+    // fresh blockhash, or it would be refused as "AlreadyProcessed" before the program ever ran.
+    svm.expire_blockhash();
     let blockhash2 = svm.latest_blockhash();
     let msg2 = Message::new_with_blockhash(&[build_instruction()], Some(&relayer.pubkey()), &blockhash2);
     let tx2 = VersionedTransaction::try_new(VersionedMessage::Legacy(msg2), &[&authority, &relayer]).unwrap();
     let res2 = svm.send_transaction(tx2);
-    assert!(res2.is_err(), "second registration should fail, but it succeeded");
+    assert_fails_with(res2, "already in use");
 }
 
 

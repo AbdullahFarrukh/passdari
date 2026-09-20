@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -132,7 +135,7 @@ fn test_issue_receipt_zero_amount_band_fails() {
     let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[owner, relayer]).unwrap();
     let res = svm.send_transaction(tx);
-    assert!(res.is_err(), "amount_band == 0 should be rejected, but it succeeded");
+    assert_fails_with(res, "InvalidAmountBand");
 }
 
 #[test]
@@ -177,5 +180,5 @@ fn test_issue_receipt_unregistered_wallet_fails() {
     let msg = Message::new_with_blockhash(&[ix], Some(&relayer.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[stranger, relayer]).unwrap();
     let res = svm.send_transaction(tx);
-    assert!(res.is_err(), "issuing without a registered business should fail, but it succeeded");
+    assert_fails_with(res, "AccountNotInitialized");
 }

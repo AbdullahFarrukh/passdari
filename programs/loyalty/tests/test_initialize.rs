@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -76,8 +79,5 @@ fn test_initialize_wrong_owner() {
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer]).unwrap();
 
     let res = svm.send_transaction(tx);
-    match &res {
-        Ok(_) => panic!("the seeds constraint should have rejected this, but the transaction succeeded"),
-        Err(e) => println!("Rejected as expected: {:?}", e),
-    }
+    assert_fails_with(res, "ConstraintSeeds");
 }

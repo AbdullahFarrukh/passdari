@@ -1,3 +1,6 @@
+mod common;
+use common::assert_fails_with;
+
 use {
     anchor_lang::{
         prelude::Pubkey,
@@ -39,18 +42,6 @@ fn send(svm: &mut LiteSVM, ixs: &[Instruction], payer: &Keypair, signers: &[&Key
     let msg = Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap();
     svm.send_transaction(tx)
-}
-
-/// Checks that a transaction failed, and failed for the given reason, so a
-/// negative test can't pass because of some unrelated mistake.
-fn assert_fails_with(res: TransactionResult, expected: &str) {
-    let failed = res.expect_err("the transaction should have failed");
-    let logs = failed.meta.logs.join("\n");
-    assert!(
-        logs.contains(expected),
-        "expected the failure to mention `{expected}`, but got {:?} with logs:\n{logs}",
-        failed.err
-    );
 }
 
 fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Keypair, business_pda: Pubkey, stamps_required: u8) {

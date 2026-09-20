@@ -165,9 +165,11 @@ Run `anchor build` first: the tests load the compiled program from
 | `test_vouchers.rs` | 17 | The NFT itself (supply, authorities, metadata), presenting freezes and cancelling thaws, gifting moves the real token, a wallet can't move a presented voucher, redeeming burns it, a gifted voucher redeems without a card, and the failure cases (below the stamp threshold, unpresented, wrong business, redeemed twice). Also: raising the reward threshold never voids a card's already-earned reward — see file for details |
 | `lib.rs` (built-in) | 1 | Program ID sanity check |
 
-In `test_vouchers.rs` every failure test checks for the specific error it should
-fail with; the failure tests in the other files only check that the call failed.
-None of these test the frontend — they run entirely against the
+Every failure test checks for the specific error it should fail with (a shared
+helper in `tests/common/mod.rs` reads it from the program logs), so a test can't
+pass for the wrong reason. Repeated transactions get a fresh blockhash, because
+LiteSVM would otherwise refuse the repeat as "AlreadyProcessed" before the
+program ran. None of these test the frontend — they run entirely against the
 Rust program in a simulated local environment (LiteSVM), with no browser
 involved. LiteSVM bundles a slightly older Token-2022 than devnet runs; both
 support everything used here.
@@ -175,7 +177,6 @@ support everything used here.
 ## What we'd build next
 
 - Card NFTs: a soulbound (non-transferable) NFT per stamp card, burned when its stamps are spent
-- Make the failure tests in the other test files check the specific error too (only `test_vouchers.rs` does today), so none can pass for the wrong reason
 - Staff delegate keys, so a tablet at the counter can't approve redemptions with the owner's own key
 - Ed25519 signature verification for receipts
 - Voucher expiry dates
