@@ -58,6 +58,7 @@ pub fn issue_receipt_handler(
     receipt.issued_at = now;
     receipt.expires_at = now + (business.receipt_ttl_seconds as i64);
     receipt.bump = ctx.bumps.receipt;
+    receipt.rent_payer = ctx.accounts.relayer.key();
 
     msg!("Receipt issued for business {:?}, band {}", receipt.business, amount_band);
     Ok(())

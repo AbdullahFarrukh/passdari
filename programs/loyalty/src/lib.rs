@@ -96,5 +96,13 @@ pub mod loyalty {
     pub fn reclaim_expired_receipt(ctx: Context<ReclaimExpiredReceipt>) -> Result<()> {
         crate::instructions::reclaim_expired_receipt::reclaim_expired_receipt_handler(ctx)
     }
+
+    pub fn close_expired_voucher(ctx: Context<CloseExpiredVoucher>) -> Result<()> {
+        crate::instructions::close_expired_voucher::close_expired_voucher_handler(ctx)
+    }
+
+    pub fn retire_idle_card_nft(ctx: Context<RetireIdleCardNft>) -> Result<()> {
+        crate::instructions::retire_idle_card_nft::retire_idle_card_nft_handler(ctx)
+    }
     
 }

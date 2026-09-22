@@ -30,4 +30,12 @@ pub enum ErrorCode {
     UriTooLong,
     #[msg("This token account does not hold the voucher")]
     NotVoucherHolder,
+    #[msg("This voucher has expired")]
+    VoucherExpired,
+    #[msg("This voucher has not expired yet")]
+    VoucherNotExpired,
+    #[msg("This card has had a stamp in the last 90 days")]
+    CardNftNotIdle,
+    #[msg("The rent must go back to the wallet that paid it")]
+    WrongRentPayer,
 }

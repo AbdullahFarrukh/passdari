@@ -114,6 +114,7 @@ fn claim(
             card: card_pda,
             customer: customer.pubkey(),
             relayer: relayer.pubkey(),
+            rent_payer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
@@ -281,4 +282,127 @@ fn test_claim_receipt_cross_tenant_fails() {
 
     let res = claim(&mut svm, program_id, business_b, receipt_pda, card_pda_b, &customer, &relayer, secret);
     assert_fails_with(res, "InvalidSecret");
+}
+fn claim_ix_paying_back(program_id: Pubkey, business_pda: Pubkey, receipt_pda: Pubkey, customer: Pubkey, relayer: Pubkey, rent_payer: Pubkey, secret: [u8; 32]) -> Instruction {
+    let (card_pda, _) = Pubkey::find_program_address(&[b"card", business_pda.as_ref(), customer.as_ref()], &program_id);
+    Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::ClaimReceipt { secret }.data(),
+        loyalty::accounts::ClaimReceipt {
+            business: business_pda,
+            receipt: receipt_pda,
+            card: card_pda,
+            customer,
+            relayer,
+            rent_payer,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+    )
+}
+
+fn reclaim_ix(program_id: Pubkey, receipt_pda: Pubkey, rent_payer: Pubkey) -> Instruction {
+    Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::ReclaimExpiredReceipt {}.data(),
+        loyalty::accounts::ReclaimExpiredReceipt { receipt: receipt_pda, rent_payer }.to_account_metas(None),
+    )
+}
+
+fn send_signed(svm: &mut LiteSVM, ix: Instruction, payer: &Keypair, signers: &[&Keypair]) -> TransactionResult {
+    svm.expire_blockhash();
+    let bh = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &bh);
+    svm.send_transaction(VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).unwrap())
+}
+
+const FEE_PER_SIGNATURE: u64 = 5_000;
+
+#[test]
+fn test_claimed_receipt_rent_goes_back_to_the_relayer() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let (card_pda, _) = Pubkey::find_program_address(&[b"card", business_pda.as_ref(), customer.pubkey().as_ref()], &program_id);
+
+    // A first stamp, so the card exists and the next claim creates nothing new.
+    let first = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&[1u8; 32]).to_bytes(), 1);
+    assert!(claim(&mut svm, program_id, business_pda, first, card_pda, &customer, &relayer, [1u8; 32]).is_ok());
+    warp(&mut svm, 61);
+
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let business_before = svm.get_balance(&business_pda).unwrap();
+    svm.expire_blockhash();
+    let second = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&[2u8; 32]).to_bytes(), 1);
+    let receipt = loyalty::Receipt::try_deserialize(&mut svm.get_account(&second).unwrap().data.as_slice()).unwrap();
+    assert_eq!(receipt.rent_payer, relayer.pubkey(), "the receipt records who paid its rent");
+    assert!(claim(&mut svm, program_id, business_pda, second, card_pda, &customer, &relayer, [2u8; 32]).is_ok());
+
+    let spent = relayer_before - svm.get_balance(&relayer.pubkey()).unwrap();
+    println!("a stamp cost the relayer {spent} lamports in total");
+    assert_eq!(spent, 2 * 2 * FEE_PER_SIGNATURE, "only the two transaction fees are spent; the receipt's rent came back");
+    assert_eq!(svm.get_balance(&business_pda).unwrap(), business_before, "the business gains nothing: it never paid");
+    assert!(svm.get_account(&second).map_or(true, |a| a.lamports == 0), "the receipt is closed");
+}
+
+#[test]
+fn test_claim_cannot_send_the_receipt_rent_elsewhere() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let secret = [3u8; 32];
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&secret).to_bytes(), 1);
+
+    // The customer tries to collect the rent the relayer paid.
+    let ix = claim_ix_paying_back(program_id, business_pda, receipt_pda, customer.pubkey(), relayer.pubkey(), customer.pubkey(), secret);
+    let res = send_signed(&mut svm, ix, &relayer, &[&customer, &relayer]);
+    assert_fails_with(res, "ConstraintHasOne");
+}
+
+#[test]
+fn test_expired_receipt_rent_goes_back_to_the_relayer() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, _customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&[4u8; 32]).to_bytes(), 1);
+    warp(&mut svm, 301);
+
+    // The clean-up needs no merchant: only whoever pays the fee signs.
+    let ix = reclaim_ix(program_id, receipt_pda, relayer.pubkey());
+    assert!(send_signed(&mut svm, ix, &relayer, &[&relayer]).is_ok(), "reclaim should succeed");
+    let spent = relayer_before - svm.get_balance(&relayer.pubkey()).unwrap();
+    assert_eq!(spent, 2 * FEE_PER_SIGNATURE + FEE_PER_SIGNATURE, "only the issue fee and the one-signature clean-up fee are spent");
+}
+
+#[test]
+fn test_anyone_can_clean_up_an_expired_receipt_for_the_relayer() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, _customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&[6u8; 32]).to_bytes(), 1);
+    let rent = svm.get_balance(&receipt_pda).unwrap();
+
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let early = send_signed(&mut svm, reclaim_ix(program_id, receipt_pda, relayer.pubkey()), &stranger, &[&stranger]);
+    assert_fails_with(early, "ReceiptNotYetExpired");
+
+    warp(&mut svm, 301);
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    assert!(send_signed(&mut svm, reclaim_ix(program_id, receipt_pda, relayer.pubkey()), &stranger, &[&stranger]).is_ok());
+    assert_eq!(svm.get_balance(&relayer.pubkey()).unwrap() - relayer_before, rent, "the whole rent went to the relayer, who paid it");
+}
+
+#[test]
+fn test_nobody_can_redirect_an_expired_receipts_rent() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, _customer, relayer, business_pda) = setup_base(&mut svm, program_id);
+    let receipt_pda = issue_receipt(&mut svm, program_id, &owner, &relayer, business_pda, keccak::hash(&[5u8; 32]).to_bytes(), 1);
+    warp(&mut svm, 301);
+
+    // The merchant names themselves as the one to be paid back.
+    let res = send_signed(&mut svm, reclaim_ix(program_id, receipt_pda, owner.pubkey()), &owner, &[&owner]);
+    assert_fails_with(res, "ConstraintHasOne");
 }

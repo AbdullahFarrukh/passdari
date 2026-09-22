@@ -16,7 +16,7 @@ use {
         token_2022::spl_token_2022::{
             self,
             extension::{
-                permanent_delegate::PermanentDelegate, BaseStateWithExtensions,
+                mint_close_authority::MintCloseAuthority, permanent_delegate::PermanentDelegate, BaseStateWithExtensions,
                 StateWithExtensions,
             },
             state::{Account as TokenState, Mint as MintState},
@@ -107,6 +107,7 @@ fn issue_and_claim(
             card: card_pda_for(program_id, business_pda, customer.pubkey()),
             customer: customer.pubkey(),
             relayer: relayer.pubkey(),
+            rent_payer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
@@ -193,6 +194,8 @@ fn mint_voucher_ix(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey, r
             customer_token: ata(customer, mint),
             card_mint,
             card_token: ata(customer, card_mint),
+            card_nft_record: Pubkey::find_program_address(&[b"card_nft", card_mint.as_ref()], &program_id).0,
+            card_rent_payer: relayer,
             customer,
             relayer,
             token_program: spl_token_2022::ID,
@@ -233,6 +236,7 @@ fn transfer_ix(program_id: Pubkey, voucher: Pubkey, mint: Pubkey, from_owner: Pu
             new_owner,
             owner: from_owner,
             relayer,
+            rent_payer: relayer,
             token_program: spl_token_2022::ID,
             associated_token_program: anchor_spl::associated_token::ID,
             system_program: system_program::ID,
@@ -252,6 +256,7 @@ fn redeem_ix(program_id: Pubkey, business: Pubkey, voucher: Pubkey, mint: Pubkey
             holder_token,
             authority,
             relayer,
+            rent_payer: relayer,
             token_program: spl_token_2022::ID,
         }
         .to_account_metas(None),
@@ -333,6 +338,9 @@ fn test_mint_creates_a_real_nft() {
     assert_eq!(mint_data.base.freeze_authority.unwrap(), voucher_pda, "the voucher account should be the freeze authority");
     let delegate = mint_data.get_extension::<PermanentDelegate>().unwrap().delegate;
     assert_eq!(Option::<Pubkey>::from(delegate), Some(voucher_pda), "the voucher account should be the permanent delegate");
+    let closer = mint_data.get_extension::<MintCloseAuthority>().unwrap().close_authority;
+    assert_eq!(Option::<Pubkey>::from(closer), Some(voucher_pda), "the voucher account should be able to close the burned mint");
+    assert_eq!(voucher_state(&svm, voucher_pda).rent_payer, relayer.pubkey(), "the voucher records who paid for it");
 
     let metadata = mint_data.get_variable_len_extension::<TokenMetadata>().unwrap();
     assert_eq!(metadata.name, "Coffee Corner - Free coffee");
@@ -468,11 +476,14 @@ fn test_transfer_moves_the_token() {
     fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
     let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
 
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
     let ix = transfer_ix(program_id, voucher_pda, mint_pda, customer.pubkey(), recipient.pubkey(), relayer.pubkey());
     let res = send(&mut svm, &[ix], &relayer, &[&customer, &relayer]);
     assert!(res.is_ok(), "transfer should succeed: {:?}", res);
 
-    assert_eq!(token_state(&svm, ata(customer.pubkey(), mint_pda)).amount, 0, "the sender should no longer hold the token");
+    assert!(is_gone(&svm, ata(customer.pubkey(), mint_pda)), "the sender's empty token account should be closed");
+    // The relayer paid for the recipient's account and got the sender's back, so only the fee is spent.
+    assert_eq!(relayer_before - svm.get_balance(&relayer.pubkey()).unwrap(), 2 * FEE_PER_SIGNATURE);
     let received = token_state(&svm, ata(recipient.pubkey(), mint_pda));
     assert_eq!(received.amount, 1, "the recipient should now hold the token");
     assert_eq!(received.owner, recipient.pubkey());
@@ -496,7 +507,8 @@ fn test_old_owner_locked_out_after_transfer() {
 
     let old_present = present_ix(program_id, voucher_pda, mint_pda, ata(customer.pubkey(), mint_pda), customer.pubkey());
     let res = send(&mut svm, &[old_present], &customer, &[&customer]);
-    assert_fails_with(res, "NotVoucherHolder");
+    // The old owner's token account was closed when they gave the voucher away.
+    assert_fails_with(res, "caused by account: holder_token. Error Code: AccountNotInitialized");
 
     // Trying to use the new holder's token account while signing as the old owner.
     let borrowed_present = present_ix(program_id, voucher_pda, mint_pda, ata(new_owner.pubkey(), mint_pda), customer.pubkey());
@@ -505,7 +517,7 @@ fn test_old_owner_locked_out_after_transfer() {
 
     let transfer_back = transfer_ix(program_id, voucher_pda, mint_pda, customer.pubkey(), owner.pubkey(), relayer.pubkey());
     let res = send(&mut svm, &[transfer_back], &relayer, &[&customer, &relayer]);
-    assert_fails_with(res, "NotVoucherHolder");
+    assert_fails_with(res, "caused by account: from_token. Error Code: AccountNotInitialized");
 }
 
 #[test]
@@ -583,15 +595,16 @@ fn test_redeem_burns_the_nft_and_closes_the_voucher() {
     let redeem = redeem_ix(program_id, business_pda, voucher_pda, mint_pda, holder_token, owner.pubkey(), relayer.pubkey());
     let res = send(&mut svm, &[redeem], &relayer, &[&owner, &relayer]);
     assert!(res.is_ok(), "redeem should succeed: {:?}", res);
-    println!("redeem_voucher used {} compute units", res.unwrap().compute_units_consumed);
+    let meta = res.unwrap();
+    println!("redeem_voucher used {} compute units", meta.compute_units_consumed);
 
-    let mint_account = svm.get_account(&mint_pda).expect("the mint stays on chain as proof");
-    assert_eq!(StateWithExtensions::<MintState>::unpack(&mint_account.data).unwrap().base.supply, 0, "the token should be burned");
-    assert_eq!(token_state(&svm, holder_token).amount, 0, "the holder should have nothing left");
-    assert!(
-        svm.get_account(&voucher_pda).map_or(true, |a| a.lamports == 0),
-        "the voucher account should be closed"
-    );
+    // The burn is the proof the voucher was used, and it stays in the chain's history.
+    assert!(meta.logs.iter().any(|l| l.contains("Instruction: BurnChecked")), "the token should be burned");
+    // Then every empty account is closed, so its rent goes back to whoever paid for it.
+    let gone = |a: Pubkey| svm.get_account(&a).map_or(true, |acc| acc.lamports == 0);
+    assert!(gone(mint_pda), "the burned NFT's mint should be closed");
+    assert!(gone(holder_token), "the holder's empty token account should be closed");
+    assert!(gone(voucher_pda), "the voucher account should be closed");
     assert_eq!(business_state(&svm, business_pda).total_redemptions, 1);
 }
 
@@ -703,4 +716,260 @@ fn test_redeem_twice_fails() {
 
     let res = send(&mut svm, &[redeem()], &relayer, &[&owner, &relayer]);
     assert_fails_with(res, "AccountNotInitialized");
+}
+
+const FEE_PER_SIGNATURE: u64 = 5_000;
+
+fn is_gone(svm: &LiteSVM, address: Pubkey) -> bool {
+    svm.get_account(&address).map_or(true, |a| a.lamports == 0)
+}
+
+fn redeem_ix_paying_back(program_id: Pubkey, business: Pubkey, voucher: Pubkey, mint: Pubkey, holder_token: Pubkey, authority: Pubkey, relayer: Pubkey, rent_payer: Pubkey) -> Instruction {
+    Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::RedeemVoucher {}.data(),
+        loyalty::accounts::RedeemVoucher { business, voucher, mint, holder_token, authority, relayer, rent_payer, token_program: spl_token_2022::ID }
+            .to_account_metas(None),
+    )
+}
+
+#[test]
+fn test_a_whole_voucher_costs_the_relayer_only_fees() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let merchant_before = svm.get_balance(&owner.pubkey()).unwrap();
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let locked = relayer_before - svm.get_balance(&relayer.pubkey()).unwrap();
+    println!("while it exists, a voucher holds {locked} lamports of the relayer's (rent + fee)");
+
+    present(&mut svm, program_id, voucher_pda, mint_pda, &customer);
+    let holder_token = ata(customer.pubkey(), mint_pda);
+    let redeem = redeem_ix(program_id, business_pda, voucher_pda, mint_pda, holder_token, owner.pubkey(), relayer.pubkey());
+    assert!(send(&mut svm, &[redeem], &relayer, &[&owner, &relayer]).is_ok(), "redeem should succeed");
+
+    let spent = relayer_before - svm.get_balance(&relayer.pubkey()).unwrap();
+    println!("after redeeming, the voucher cost the relayer {spent} lamports in total");
+    assert_eq!(spent, 2 * 2 * FEE_PER_SIGNATURE, "only the mint and redeem fees are spent; all the rent came back");
+    assert_eq!(svm.get_balance(&owner.pubkey()).unwrap(), merchant_before, "the merchant gains nothing: they never paid");
+}
+
+#[test]
+fn test_redeem_cannot_send_the_refund_elsewhere() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    present(&mut svm, program_id, voucher_pda, mint_pda, &customer);
+
+    // The merchant tries to collect the rent the relayer paid.
+    let holder_token = ata(customer.pubkey(), mint_pda);
+    let ix = redeem_ix_paying_back(program_id, business_pda, voucher_pda, mint_pda, holder_token, owner.pubkey(), relayer.pubkey(), owner.pubkey());
+    let res = send(&mut svm, &[ix], &relayer, &[&owner, &relayer]);
+    assert_fails_with(res, "ConstraintHasOne");
+    assert!(!is_gone(&svm, mint_pda), "nothing was burned or closed");
+}
+
+#[test]
+fn test_minting_lets_the_voucher_close_the_token_account() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let holder_token = ata(customer.pubkey(), mint_pda);
+
+    // The customer signs the minting transaction, so the close right is granted right then, not later at
+    // present — the voucher (and so a future close-when-expired) doesn't have to wait on the holder ever
+    // presenting it.
+    let state = token_state(&svm, holder_token);
+    assert_eq!(Option::<Pubkey>::from(state.close_authority), Some(voucher_pda), "minting hands the voucher the right to close it");
+    assert_eq!(state.owner, customer.pubkey(), "the holder still owns it");
+    assert_eq!(state.amount, 1, "and still holds the token");
+
+    present(&mut svm, program_id, voucher_pda, mint_pda, &customer);
+    assert_eq!(Option::<Pubkey>::from(token_state(&svm, holder_token).close_authority), Some(voucher_pda), "presenting doesn't change it");
+}
+
+#[test]
+fn test_gift_after_cancelling_still_returns_the_rent() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    let recipient = Keypair::new();
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let holder_token = ata(customer.pubkey(), mint_pda);
+
+    // Present and cancel: the close right now belongs to the voucher, not the holder.
+    present(&mut svm, program_id, voucher_pda, mint_pda, &customer);
+    let cancel = cancel_ix(program_id, voucher_pda, mint_pda, holder_token, customer.pubkey());
+    assert!(send(&mut svm, &[cancel], &customer, &[&customer]).is_ok(), "cancel should succeed");
+
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let gift = transfer_ix(program_id, voucher_pda, mint_pda, customer.pubkey(), recipient.pubkey(), relayer.pubkey());
+    assert!(send(&mut svm, &[gift], &relayer, &[&customer, &relayer]).is_ok(), "gift should succeed");
+    assert!(is_gone(&svm, holder_token), "the sender's empty account is closed by the voucher");
+    assert_eq!(relayer_before - svm.get_balance(&relayer.pubkey()).unwrap(), 2 * FEE_PER_SIGNATURE);
+
+    // The recipient can still present and redeem it, and the rent still comes back.
+    svm.airdrop(&recipient.pubkey(), 1_000_000_000).unwrap(); // presenting is paid by the holder in these tests
+    present(&mut svm, program_id, voucher_pda, mint_pda, &recipient);
+    let redeem = redeem_ix(program_id, business_pda, voucher_pda, mint_pda, ata(recipient.pubkey(), mint_pda), owner.pubkey(), relayer.pubkey());
+    assert!(send(&mut svm, &[redeem], &relayer, &[&owner, &relayer]).is_ok(), "the recipient's voucher should redeem");
+    assert!(is_gone(&svm, mint_pda) && is_gone(&svm, voucher_pda) && is_gone(&svm, ata(recipient.pubkey(), mint_pda)));
+}
+
+const NINETY_DAYS: i64 = 90 * 24 * 60 * 60;
+
+fn close_expired_ix(program_id: Pubkey, voucher: Pubkey, mint: Pubkey, holder_token: Pubkey, rent_payer: Pubkey) -> Instruction {
+    Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::CloseExpiredVoucher {}.data(),
+        loyalty::accounts::CloseExpiredVoucher { voucher, mint, holder_token, rent_payer, token_program: spl_token_2022::ID }
+            .to_account_metas(None),
+    )
+}
+
+fn funded_stranger(svm: &mut LiteSVM) -> Keypair {
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    stranger
+}
+
+#[test]
+fn test_voucher_is_valid_for_90_days_from_minting() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+
+    let voucher = voucher_state(&svm, voucher_pda);
+    assert_eq!(voucher.expires_at, voucher.minted_at + NINETY_DAYS, "the date is fixed on the voucher when it is minted");
+    let token = token_state(&svm, ata(customer.pubkey(), mint_pda));
+    assert_eq!(Option::<Pubkey>::from(token.close_authority), Some(voucher_pda), "the customer hands the voucher the close right at minting");
+}
+
+#[test]
+fn test_expired_voucher_cannot_be_presented_gifted_or_redeemed() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2);
+    let (unused, unused_mint) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let (presented, presented_mint) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 1);
+    present(&mut svm, program_id, presented, presented_mint, &customer);
+
+    // On the last day it still works...
+    warp(&mut svm, NINETY_DAYS - 3 * 61);
+    let cancel = cancel_ix(program_id, presented, presented_mint, ata(customer.pubkey(), presented_mint), customer.pubkey());
+    assert!(send(&mut svm, &[cancel], &customer, &[&customer]).is_ok(), "cancelling works at any time");
+    present(&mut svm, program_id, presented, presented_mint, &customer);
+
+    // ...and after it, it doesn't.
+    warp(&mut svm, 3 * 61 + 1);
+    let res = send(&mut svm, &[present_ix(program_id, unused, unused_mint, ata(customer.pubkey(), unused_mint), customer.pubkey())], &customer, &[&customer]);
+    assert_fails_with(res, "VoucherExpired");
+    let gift = transfer_ix(program_id, unused, unused_mint, customer.pubkey(), Keypair::new().pubkey(), relayer.pubkey());
+    assert_fails_with(send(&mut svm, &[gift], &relayer, &[&customer, &relayer]), "VoucherExpired");
+    let redeem = redeem_ix(program_id, business_pda, presented, presented_mint, ata(customer.pubkey(), presented_mint), owner.pubkey(), relayer.pubkey());
+    assert_fails_with(send(&mut svm, &[redeem], &relayer, &[&owner, &relayer]), "VoucherExpired");
+}
+
+#[test]
+fn test_expired_voucher_is_closed_and_all_its_rent_returned() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let customer_before = svm.get_balance(&customer.pubkey()).unwrap();
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let holder_token = ata(customer.pubkey(), mint_pda);
+    let stranger = funded_stranger(&mut svm);
+
+    let early = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
+    assert_fails_with(early, "VoucherNotExpired");
+
+    warp(&mut svm, NINETY_DAYS + 1);
+    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
+    assert!(res.is_ok(), "anyone can close an expired voucher: {:?}", res);
+    assert!(res.unwrap().logs.iter().any(|l| l.contains("Instruction: BurnChecked")), "the token is burned");
+    assert!(is_gone(&svm, mint_pda) && is_gone(&svm, holder_token) && is_gone(&svm, voucher_pda), "every account is closed");
+    assert_eq!(relayer_before - svm.get_balance(&relayer.pubkey()).unwrap(), 2 * FEE_PER_SIGNATURE, "only the minting fee is spent");
+    assert_eq!(svm.get_balance(&customer.pubkey()).unwrap(), customer_before, "the customer gains nothing: they never paid");
+}
+
+#[test]
+fn test_expired_voucher_left_presented_is_still_closed() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    present(&mut svm, program_id, voucher_pda, mint_pda, &customer);
+    let holder_token = ata(customer.pubkey(), mint_pda);
+
+    warp(&mut svm, NINETY_DAYS + 1);
+    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &relayer, &[&relayer]);
+    assert!(res.is_ok(), "a frozen voucher is thawed and burned: {:?}", res);
+    assert!(is_gone(&svm, mint_pda) && is_gone(&svm, holder_token) && is_gone(&svm, voucher_pda));
+}
+
+#[test]
+fn test_expired_gift_that_was_never_presented() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    let recipient = Keypair::new();
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let gift = transfer_ix(program_id, voucher_pda, mint_pda, customer.pubkey(), recipient.pubkey(), relayer.pubkey());
+    assert!(send(&mut svm, &[gift], &relayer, &[&customer, &relayer]).is_ok());
+    let recipient_token = ata(recipient.pubkey(), mint_pda);
+
+    warp(&mut svm, NINETY_DAYS + 1);
+    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, recipient_token, relayer.pubkey())], &relayer, &[&relayer]);
+    assert!(res.is_ok(), "an expired gift is closed too: {:?}", res);
+    assert!(is_gone(&svm, mint_pda) && is_gone(&svm, voucher_pda), "the NFT and the voucher record are closed");
+    // The recipient never signed anything, so the program can't close their account; it stays theirs, empty.
+    assert_eq!(token_state(&svm, recipient_token).amount, 0);
+}
+
+#[test]
+fn test_expired_voucher_needs_the_account_that_really_holds_it() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+
+    // An empty account for the same NFT, owned by someone else.
+    let stranger = funded_stranger(&mut svm);
+    let open = create_associated_token_account(&stranger.pubkey(), &stranger.pubkey(), &mint_pda, &spl_token_2022::ID);
+    assert!(send(&mut svm, &[open], &stranger, &[&stranger]).is_ok());
+
+    warp(&mut svm, NINETY_DAYS + 1);
+    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, ata(stranger.pubkey(), mint_pda), relayer.pubkey())], &stranger, &[&stranger]);
+    assert_fails_with(res, "NotVoucherHolder");
+    assert!(!is_gone(&svm, voucher_pda), "nothing was closed while the token still exists");
+}
+
+#[test]
+fn test_expired_voucher_rent_cannot_be_redirected() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    fill_card(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1);
+    let (voucher_pda, mint_pda) = mint(&mut svm, program_id, business_pda, &customer, &relayer, 0);
+    let stranger = funded_stranger(&mut svm);
+
+    warp(&mut svm, NINETY_DAYS + 1);
+    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, ata(customer.pubkey(), mint_pda), stranger.pubkey())], &stranger, &[&stranger]);
+    assert_fails_with(res, "ConstraintHasOne");
 }

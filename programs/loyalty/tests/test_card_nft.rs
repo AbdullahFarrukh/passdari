@@ -91,6 +91,10 @@ fn card_mint_for(program_id: Pubkey, card: Pubkey, cycle: u32) -> Pubkey {
     Pubkey::find_program_address(&[b"card_mint", card.as_ref(), &cycle.to_le_bytes()], &program_id).0
 }
 
+fn record_for(program_id: Pubkey, mint: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"card_nft", mint.as_ref()], &program_id).0
+}
+
 fn ata(wallet: Pubkey, mint: Pubkey) -> Pubkey {
     get_associated_token_address_with_program_id(&wallet, &mint, &spl_token_2022::ID)
 }
@@ -133,6 +137,7 @@ fn issue_and_claim_ixs(
             card: card_pda_for(program_id, business_pda, customer.pubkey()),
             customer: customer.pubkey(),
             relayer: relayer.pubkey(),
+            rent_payer: relayer.pubkey(),
             system_program: system_program::ID,
         }
         .to_account_metas(None),
@@ -156,6 +161,7 @@ fn mint_card_nft_ix(
             business: business_pda,
             card,
             mint,
+            record: record_for(program_id, mint),
             customer_token: ata(customer, mint),
             customer,
             relayer,
@@ -188,6 +194,8 @@ fn mint_voucher_ix(
             customer_token: ata(customer, mint),
             card_mint,
             card_token,
+            card_nft_record: record_for(program_id, card_mint),
+            card_rent_payer: relayer,
             customer,
             relayer,
             token_program: spl_token_2022::ID,
@@ -390,36 +398,39 @@ fn test_card_made_before_card_nfts_can_cash_in_and_get_one_later() {
     assert!(!is_gone(&svm, card_mint_for(program_id, card_pda, 0)));
 }
 
-/// The customer burns their own card NFT with a plain Token-2022 burn, and
-/// optionally closes the token account too.
-fn burn_own_card_nft(svm: &mut LiteSVM, program_id: Pubkey, business_pda: Pubkey, customer: &Keypair, relayer: &Keypair, also_close: bool) {
+/// The customer burns their own card NFT with a plain Token-2022 burn.
+fn burn_own_card_nft(svm: &mut LiteSVM, program_id: Pubkey, business_pda: Pubkey, customer: &Keypair, relayer: &Keypair) {
     let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
     let mint = card_mint_for(program_id, card_pda, 0);
     let token = ata(customer.pubkey(), mint);
-    let mut ixs = vec![spl_token_2022::instruction::burn_checked(&spl_token_2022::ID, &token, &mint, &customer.pubkey(), &[], 1, 0).unwrap()];
-    if also_close {
-        ixs.push(spl_token_2022::instruction::close_account(&spl_token_2022::ID, &token, &customer.pubkey(), &customer.pubkey(), &[]).unwrap());
-    }
-    let res = send(svm, &ixs, relayer, &[customer, relayer]);
+    let burn = spl_token_2022::instruction::burn_checked(&spl_token_2022::ID, &token, &mint, &customer.pubkey(), &[], 1, 0).unwrap();
+    let res = send(svm, &[burn], relayer, &[customer, relayer]);
     assert!(res.is_ok(), "the holder can burn their own card: {:?}", res);
+
+    // Closing the account is the card's job now (the customer granted it when the NFT was minted), so the
+    // rent can only go back to whoever paid for it.
+    let close = spl_token_2022::instruction::close_account(&spl_token_2022::ID, &token, &customer.pubkey(), &customer.pubkey(), &[]).unwrap();
+    let res = send(svm, &[close], relayer, &[customer, relayer]);
+    assert_fails_with(res, "owner does not match");
 }
 
 #[test]
 fn test_customer_who_burned_their_card_nft_can_still_cash_in() {
     let program_id = loyalty::id();
-    for also_close in [false, true] {
-        let mut svm = LiteSVM::new();
-        let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
-        assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
-        assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2, None).is_ok());
-        burn_own_card_nft(&mut svm, program_id, business_pda, &customer, &relayer, also_close);
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2, None).is_ok());
+    burn_own_card_nft(&mut svm, program_id, business_pda, &customer, &relayer);
 
-        let res = cash_in(&mut svm, program_id, business_pda, &customer, &relayer, 0, 0);
-        assert!(res.is_ok(), "cashing in must not get stuck on a burned card NFT (also_close={also_close}): {:?}", res);
-        let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
-        assert!(is_gone(&svm, card_mint_for(program_id, card_pda, 0)), "the empty mint should be closed");
-        assert_eq!(card_state(&svm, program_id, business_pda, customer.pubkey()).nft_cycle, 1);
-    }
+    let res = cash_in(&mut svm, program_id, business_pda, &customer, &relayer, 0, 0);
+    assert!(res.is_ok(), "cashing in must not get stuck on a burned card NFT: {:?}", res);
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let mint = card_mint_for(program_id, card_pda, 0);
+    assert!(is_gone(&svm, mint), "the empty mint should be closed");
+    assert!(is_gone(&svm, ata(customer.pubkey(), mint)), "the empty token account should be closed");
+    assert!(is_gone(&svm, record_for(program_id, mint)), "the record should be closed");
+    assert_eq!(card_state(&svm, program_id, business_pda, customer.pubkey()).nft_cycle, 1);
 }
 
 #[test]
@@ -444,6 +455,7 @@ fn test_sending_lamports_to_the_mint_address_does_not_block_the_nft() {
     let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
     let mint_pda = card_mint_for(program_id, card_pda, 0);
     svm.airdrop(&mint_pda, 1).unwrap();
+    svm.airdrop(&record_for(program_id, mint_pda), 1).unwrap();
 
     let res = stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0));
     assert!(res.is_ok(), "a pre-funded mint address must not stop the NFT: {:?}", res);
@@ -470,6 +482,7 @@ fn test_nobody_can_mint_a_card_nft_for_someone_elses_card() {
             business: business_pda,
             card: victim_card,
             mint,
+            record: record_for(program_id, mint),
             customer_token: ata(outsider.pubkey(), mint),
             customer: outsider.pubkey(),
             relayer: relayer.pubkey(),
@@ -547,4 +560,122 @@ fn test_relayer_gets_all_the_card_nft_rent_back() {
         without_nft.get_balance(&relayer_b.pubkey()).unwrap(),
         "after cashing in, the card NFT should have cost the relayer nothing"
     );
+}
+
+const NINETY_DAYS: i64 = 90 * 24 * 60 * 60;
+
+fn retire_idle_ix(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey, cycle: u32, rent_payer: Pubkey) -> Instruction {
+    let card = card_pda_for(program_id, business_pda, customer);
+    let mint = card_mint_for(program_id, card, cycle);
+    Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::RetireIdleCardNft {}.data(),
+        loyalty::accounts::RetireIdleCardNft {
+            card,
+            customer,
+            card_mint: mint,
+            card_token: ata(customer, mint),
+            record: record_for(program_id, mint),
+            rent_payer,
+            token_program: spl_token_2022::ID,
+        }
+        .to_account_metas(None),
+    )
+}
+
+#[test]
+fn test_card_nft_records_who_paid_and_lets_the_card_close_it() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let mint = card_mint_for(program_id, card_pda, 0);
+    let record = svm.get_account(&record_for(program_id, mint)).expect("the record exists");
+    assert_eq!(loyalty::CardNft::try_deserialize(&mut record.data.as_slice()).unwrap().rent_payer, relayer.pubkey());
+    let token = svm.get_account(&ata(customer.pubkey(), mint)).unwrap();
+    let state = StateWithExtensions::<TokenState>::unpack(&token.data).unwrap().base;
+    assert_eq!(Option::<Pubkey>::from(state.close_authority), Some(card_pda), "the customer hands the card the close right");
+}
+
+#[test]
+fn test_idle_card_nft_is_recycled_after_90_days_and_the_stamps_stay() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let mint = card_mint_for(program_id, card_pda, 0);
+    let token = ata(customer.pubkey(), mint);
+    let record = record_for(program_id, mint);
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+
+    let early = send(&mut svm, &[retire_idle_ix(program_id, business_pda, customer.pubkey(), 0, relayer.pubkey())], &stranger, &[&stranger]);
+    assert_fails_with(early, "CardNftNotIdle");
+
+    warp(&mut svm, NINETY_DAYS);
+    let held = [mint, token, record].iter().map(|a| svm.get_balance(a).unwrap()).sum::<u64>();
+    let relayer_before = svm.get_balance(&relayer.pubkey()).unwrap();
+    let res = send(&mut svm, &[retire_idle_ix(program_id, business_pda, customer.pubkey(), 0, relayer.pubkey())], &stranger, &[&stranger]);
+    assert!(res.is_ok(), "anyone can recycle an idle card's NFT: {:?}", res);
+
+    assert!(is_gone(&svm, mint) && is_gone(&svm, token) && is_gone(&svm, record), "the NFT and its record are closed");
+    assert_eq!(svm.get_balance(&relayer.pubkey()).unwrap() - relayer_before, held, "all of the NFT's rent went back to the relayer");
+    let card = card_state(&svm, program_id, business_pda, customer.pubkey());
+    assert_eq!(card.stamps, 1, "the stamps stay on the card");
+    assert_eq!(card.nft_cycle, 1, "the card moves on to its next NFT");
+
+    let res = stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 2, Some(1));
+    assert!(res.is_ok(), "the next stamp brings a fresh NFT: {:?}", res);
+    assert!(!is_gone(&svm, card_mint_for(program_id, card_pda, 1)));
+    assert_eq!(card_state(&svm, program_id, business_pda, customer.pubkey()).stamps, 2);
+}
+
+#[test]
+fn test_idle_card_nft_rent_cannot_be_redirected() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 2);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+    warp(&mut svm, NINETY_DAYS);
+    let res = send(&mut svm, &[retire_idle_ix(program_id, business_pda, customer.pubkey(), 0, owner.pubkey())], &owner, &[&owner]);
+    assert_fails_with(res, "ConstraintHasOne");
+}
+
+#[test]
+fn test_cash_in_cannot_send_the_card_nft_rent_elsewhere() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let card_mint = card_mint_for(program_id, card_pda, 0);
+    let mut ix = mint_voucher_ix(program_id, business_pda, customer.pubkey(), relayer.pubkey(), 0, card_mint, ata(customer.pubkey(), card_mint));
+    assert_eq!(ix.accounts[7].pubkey, record_for(program_id, card_mint), "account 8 is the card's rent payer");
+    ix.accounts[8].pubkey = customer.pubkey();
+    assert_fails_with(send(&mut svm, &[ix], &relayer, &[&customer, &relayer]), "WrongRentPayer");
+}
+
+#[test]
+fn test_older_card_nft_without_a_record_still_cashes_in() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let (owner, customer, relayer, business_pda) = setup_base(&mut svm, program_id, 1);
+    assert!(stamp(&mut svm, program_id, &owner, business_pda, &customer, &relayer, 1, Some(0)).is_ok());
+    let card_pda = card_pda_for(program_id, business_pda, customer.pubkey());
+    let card_mint = card_mint_for(program_id, card_pda, 0);
+
+    // Card NFTs made before records existed have none.
+    let record = record_for(program_id, card_mint);
+    let mut account = svm.get_account(&record).unwrap();
+    account.lamports = 0;
+    account.data = vec![];
+    account.owner = system_program::ID;
+    svm.set_account(record, account).unwrap();
+
+    let res = cash_in(&mut svm, program_id, business_pda, &customer, &relayer, 0, 0);
+    assert!(res.is_ok(), "an NFT with no record still cashes in: {:?}", res);
+    assert!(is_gone(&svm, card_mint) && is_gone(&svm, ata(customer.pubkey(), card_mint)));
 }

@@ -2,18 +2,15 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
 use anchor_spl::associated_token::{get_associated_token_address_with_program_id, AssociatedToken};
 use anchor_spl::token_interface::{
-    burn_checked, close_account, mint_to_checked, set_authority,
-    spl_pod::optional_keys::OptionalNonZeroPubkey,
-    spl_token_2022::{
-        extension::StateWithExtensions, instruction::AuthorityType, state::Account as TokenState,
-    },
-    spl_token_metadata_interface::state::TokenMetadata, token_metadata_initialize, BurnChecked,
-    CloseAccount, Mint, MintToChecked, SetAuthority, Token2022, TokenAccount,
-    TokenMetadataInitialize,
+    mint_to_checked, set_authority, spl_pod::optional_keys::OptionalNonZeroPubkey,
+    spl_token_2022::instruction::AuthorityType,
+    spl_token_metadata_interface::state::TokenMetadata, token_metadata_initialize, Mint,
+    MintToChecked, SetAuthority, Token2022, TokenAccount, TokenMetadataInitialize,
 };
-use crate::state::{Business, LoyaltyCard, Voucher};
+use crate::state::{Business, CardNft, LoyaltyCard, Voucher};
 use crate::error::ErrorCode;
-use crate::constants::{MAX_VOUCHER_URI_LEN, VOUCHER_SYMBOL};
+use crate::constants::{MAX_VOUCHER_URI_LEN, VOUCHER_SYMBOL, VOUCHER_VALID_SECONDS};
+use crate::instructions::mint_card_nft::{burn_and_close_card_nft, close_program_account};
 
 pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: String) -> Result<()> {
     require!(uri.len() <= MAX_VOUCHER_URI_LEN, ErrorCode::UriTooLong);
@@ -33,6 +30,8 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: Str
     voucher.mint = ctx.accounts.mint.key();
     voucher.voucher_id = voucher_id;
     voucher.minted_at = clock.unix_timestamp;
+    voucher.rent_payer = ctx.accounts.relayer.key();
+    voucher.expires_at = clock.unix_timestamp + VOUCHER_VALID_SECONDS;
     voucher.bump = ctx.bumps.voucher;
 
     business.total_vouchers_issued += 1;
@@ -109,6 +108,22 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: Str
         0,
     )?;
 
+    // The customer hands the voucher the right to close their token account,
+    // so it can be closed (and its rent returned) when the voucher is redeemed
+    // or expires, even if they never come back. They sign this transaction,
+    // so they can grant it now.
+    set_authority(
+        CpiContext::new(
+            token_program,
+            SetAuthority {
+                current_authority: ctx.accounts.customer.to_account_info(),
+                account_or_mint: ctx.accounts.customer_token.to_account_info(),
+            },
+        ),
+        AuthorityType::CloseAccount,
+        Some(voucher_info.key()),
+    )?;
+
     // Give up the right to mint, so only one of these tokens can ever exist.
     set_authority(
         CpiContext::new_with_signer(
@@ -132,66 +147,46 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: Str
     Ok(())
 }
 
-/// Burns the customer's card NFT and closes its accounts, handing the rent
-/// back to the relayer. Returns false when the card has no NFT, which is the
-/// case for cards made before card NFTs existed.
+/// Burns the customer's card NFT and closes its accounts, sending the rent
+/// back to whoever paid for it. Returns false when the card has no NFT, which
+/// is the case for cards made before card NFTs existed.
 ///
 /// It copes with a customer who burned the token themselves: nothing is left
 /// to burn then, but the accounts are still cleaned up, so cashing in can
 /// never get stuck on the card NFT.
 fn retire_card_nft(accounts: &MintVoucher) -> Result<bool> {
-    let token_program = accounts.token_program.key();
     let card_mint = accounts.card_mint.to_account_info();
-    if *card_mint.owner != token_program || card_mint.data_is_empty() {
+    if *card_mint.owner != accounts.token_program.key() || card_mint.data_is_empty() {
         return Ok(false);
     }
 
+    // The NFT's record says who paid for it. NFTs made before these records
+    // existed have none; their rent goes to the relayer signing this cash-in.
+    let record = accounts.card_nft_record.to_account_info();
+    let has_record = *record.owner == crate::ID && !record.data_is_empty();
+    let destination = if has_record {
+        let payer = CardNft::try_deserialize(&mut &record.try_borrow_data()?[..])?.rent_payer;
+        require_keys_eq!(accounts.card_rent_payer.key(), payer, ErrorCode::WrongRentPayer);
+        accounts.card_rent_payer.to_account_info()
+    } else {
+        accounts.relayer.to_account_info()
+    };
+
     let card = &accounts.card;
-    let card_info = card.to_account_info();
     let bump = [card.bump];
     let seeds: &[&[u8]] = &[b"card", card.business.as_ref(), card.customer.as_ref(), &bump];
-    let signer_seeds = &[seeds];
-    let relayer = accounts.relayer.to_account_info();
-
-    let card_token = accounts.card_token.to_account_info();
-    if *card_token.owner == token_program && !card_token.data_is_empty() {
-        let amount = {
-            let data = card_token.try_borrow_data()?;
-            StateWithExtensions::<TokenState>::unpack(&data)?.base.amount
-        };
-        if amount > 0 {
-            // The card account is the mint's permanent delegate, so it can
-            // burn the token without asking the holder.
-            burn_checked(
-                CpiContext::new_with_signer(
-                    token_program,
-                    BurnChecked {
-                        mint: card_mint.clone(),
-                        from: card_token.clone(),
-                        authority: card_info.clone(),
-                    },
-                    signer_seeds,
-                ),
-                amount,
-                0,
-            )?;
-        }
-        close_account(CpiContext::new(
-            token_program,
-            CloseAccount {
-                account: card_token,
-                destination: relayer.clone(),
-                authority: accounts.customer.to_account_info(),
-            },
-        ))?;
+    burn_and_close_card_nft(
+        &card.to_account_info(),
+        &[seeds],
+        &card_mint,
+        &accounts.card_token.to_account_info(),
+        Some(&accounts.customer.to_account_info()),
+        &destination,
+        &accounts.token_program.to_account_info(),
+    )?;
+    if has_record {
+        close_program_account(&record, &destination)?;
     }
-
-    close_account(CpiContext::new_with_signer(
-        token_program,
-        CloseAccount { account: card_mint, destination: relayer, authority: card_info },
-        signer_seeds,
-    ))?;
-
     Ok(true)
 }
 
@@ -218,8 +213,9 @@ pub struct MintVoucher<'info> {
     pub voucher: Account<'info, Voucher>,
 
     /// The voucher's NFT. The voucher account is its mint authority, freeze
-    /// authority and permanent delegate, so only this program can freeze,
-    /// thaw or burn it. The metadata lives inside the mint account itself.
+    /// authority, permanent delegate and close authority, so only this
+    /// program can freeze, thaw, burn or close it. The metadata lives inside
+    /// the mint account itself.
     #[account(
         init,
         payer = relayer,
@@ -231,6 +227,7 @@ pub struct MintVoucher<'info> {
         mint::token_program = token_program,
         extensions::metadata_pointer::metadata_address = mint,
         extensions::permanent_delegate::delegate = voucher,
+        extensions::close_authority::authority = voucher,
     )]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -265,6 +262,21 @@ pub struct MintVoucher<'info> {
         ),
     )]
     pub card_token: UncheckedAccount<'info>,
+
+    /// CHECK: The card NFT's record of who paid for it. Its address is fixed
+    /// by the NFT's mint; it may not exist (no NFT, or one made before records
+    /// existed), which the handler checks.
+    #[account(
+        mut,
+        seeds = [b"card_nft", card_mint.key().as_ref()],
+        bump,
+    )]
+    pub card_nft_record: UncheckedAccount<'info>,
+
+    /// CHECK: Receives the card NFT's rent. When the record exists this must
+    /// be the wallet it names, which the handler checks.
+    #[account(mut)]
+    pub card_rent_payer: UncheckedAccount<'info>,
 
     /// The customer converting their stamps into a voucher. Signs to
     /// authorize it, but pays nothing.

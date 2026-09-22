@@ -1,12 +1,14 @@
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{transfer_checked, Mint, Token2022, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{
+    close_account, transfer_checked, CloseAccount, Mint, Token2022, TokenAccount, TransferChecked,
+};
 use crate::state::Voucher;
 use crate::error::ErrorCode;
 
 #[derive(Accounts)]
 pub struct TransferVoucher<'info> {
-    #[account(mut, has_one = mint)]
+    #[account(mut, has_one = mint, has_one = rent_payer)]
     pub voucher: Account<'info, Voucher>,
 
     pub mint: Box<InterfaceAccount<'info, Mint>>,
@@ -45,6 +47,12 @@ pub struct TransferVoucher<'info> {
     #[account(mut)]
     pub relayer: Signer<'info>,
 
+    /// The wallet that paid for the voucher, recorded in it. Receives back
+    /// the rent of the sender's token account, which is empty once the
+    /// voucher has moved. Normally this is the relayer itself.
+    #[account(mut)]
+    pub rent_payer: SystemAccount<'info>,
+
     pub token_program: Program<'info, Token2022>,
 
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -53,6 +61,8 @@ pub struct TransferVoucher<'info> {
 }
 
 pub fn transfer_voucher_handler(ctx: Context<TransferVoucher>) -> Result<()> {
+    // A voucher is only usable for 90 days after it was minted.
+    require!(Clock::get()?.unix_timestamp <= ctx.accounts.voucher.expires_at, ErrorCode::VoucherExpired);
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.key(),
@@ -66,6 +76,38 @@ pub fn transfer_voucher_handler(ctx: Context<TransferVoucher>) -> Result<()> {
         1,
         ctx.accounts.mint.decimals,
     )?;
+
+    // The sender's token account is empty now, so close it and send its rent
+    // back to whoever paid for it. Normally the sender can close it; once the
+    // voucher has been presented (and cancelled), that right belongs to the
+    // voucher. An account that names some other close authority is left.
+    let voucher = &ctx.accounts.voucher;
+    let voucher_key = voucher.key();
+    let id_bytes = voucher.voucher_id.to_le_bytes();
+    let bump = [voucher.bump];
+    let seeds: &[&[u8]] = &[b"voucher", voucher.business.as_ref(), &id_bytes, &bump];
+    let token_program = ctx.accounts.token_program.key();
+    let from_closer: Option<Pubkey> = ctx.accounts.from_token.close_authority.into();
+    if from_closer.is_none() {
+        close_account(CpiContext::new(
+            token_program,
+            CloseAccount {
+                account: ctx.accounts.from_token.to_account_info(),
+                destination: ctx.accounts.rent_payer.to_account_info(),
+                authority: ctx.accounts.owner.to_account_info(),
+            },
+        ))?;
+    } else if from_closer == Some(voucher_key) {
+        close_account(CpiContext::new_with_signer(
+            token_program,
+            CloseAccount {
+                account: ctx.accounts.from_token.to_account_info(),
+                destination: ctx.accounts.rent_payer.to_account_info(),
+                authority: ctx.accounts.voucher.to_account_info(),
+            },
+            &[seeds],
+        ))?;
+    }
 
     ctx.accounts.voucher.owner = ctx.accounts.new_owner.key();
     msg!("Voucher {} transferred to {:?}", ctx.accounts.voucher.voucher_id, ctx.accounts.new_owner.key());

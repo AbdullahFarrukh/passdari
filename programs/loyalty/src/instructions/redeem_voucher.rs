@@ -1,6 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    burn_checked, thaw_account, BurnChecked, Mint, ThawAccount, Token2022, TokenAccount,
+    burn_checked, close_account, spl_token_2022::{
+        extension::{mint_close_authority::MintCloseAuthority, BaseStateWithExtensions, StateWithExtensions},
+        state::Mint as MintState,
+    },
+    thaw_account, BurnChecked, CloseAccount, Mint, ThawAccount, Token2022, TokenAccount,
 };
 use crate::state::{Business, Voucher};
 use crate::error::ErrorCode;
@@ -15,15 +19,19 @@ pub struct RedeemVoucher<'info> {
     )]
     pub business: Account<'info, Business>,
 
+    /// Closed here. Its rent goes back to whoever paid for it, never to the
+    /// merchant: the merchant didn't pay for it.
     #[account(
         mut,
-        close = authority,
+        close = rent_payer,
         has_one = business,
         has_one = mint,
+        has_one = rent_payer,
     )]
     pub voucher: Account<'info, Voucher>,
 
-    /// Writable because burning lowers its supply.
+    /// Writable because burning lowers its supply, and because it is closed
+    /// once it is empty.
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
 
@@ -48,10 +56,18 @@ pub struct RedeemVoucher<'info> {
     /// a payer.
     pub relayer: Signer<'info>,
 
+    /// The wallet that paid for the voucher, recorded in it. Receives back
+    /// the rent of the voucher account, its NFT and the holder's token
+    /// account. Normally this is the relayer itself.
+    #[account(mut)]
+    pub rent_payer: SystemAccount<'info>,
+
     pub token_program: Program<'info, Token2022>,
 }
 
 pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
+    // A voucher is only usable for 90 days after it was minted.
+    require!(Clock::get()?.unix_timestamp <= ctx.accounts.voucher.expires_at, ErrorCode::VoucherExpired);
     let voucher = &ctx.accounts.voucher;
     let id_bytes = voucher.voucher_id.to_le_bytes();
     let bump = [voucher.bump];
@@ -61,6 +77,8 @@ pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
     let token_program = ctx.accounts.token_program.key();
     let holder_token = ctx.accounts.holder_token.to_account_info();
     let mint = ctx.accounts.mint.to_account_info();
+    let voucher_info = voucher.to_account_info();
+    let rent_payer = ctx.accounts.rent_payer.to_account_info();
 
     // A frozen account can't be burned from, so thaw it first.
     thaw_account(CpiContext::new_with_signer(
@@ -68,7 +86,7 @@ pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
         ThawAccount {
             account: holder_token.clone(),
             mint: mint.clone(),
-            authority: voucher.to_account_info(),
+            authority: voucher_info.clone(),
         },
         signer_seeds,
     ))?;
@@ -79,15 +97,52 @@ pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
         CpiContext::new_with_signer(
             token_program,
             BurnChecked {
-                mint,
-                from: holder_token,
-                authority: voucher.to_account_info(),
+                mint: mint.clone(),
+                from: holder_token.clone(),
+                authority: voucher_info.clone(),
             },
             signer_seeds,
         ),
         1,
         ctx.accounts.mint.decimals,
     )?;
+
+    // The burn is the proof the voucher was used; it stays in the chain's
+    // history for good. The now-empty accounts are closed so their rent goes
+    // back to whoever paid for them. The holder granted the voucher the right
+    // to close their token account when they presented it.
+    let holder_closer: Option<Pubkey> = ctx.accounts.holder_token.close_authority.into();
+    if holder_closer == Some(voucher_info.key()) {
+        close_account(CpiContext::new_with_signer(
+            token_program,
+            CloseAccount {
+                account: holder_token,
+                destination: rent_payer.clone(),
+                authority: voucher_info.clone(),
+            },
+            signer_seeds,
+        ))?;
+    }
+
+    let mint_closer = {
+        let data = mint.try_borrow_data()?;
+        let state = StateWithExtensions::<MintState>::unpack(&data)?;
+        state
+            .get_extension::<MintCloseAuthority>()
+            .ok()
+            .and_then(|ext| Option::<Pubkey>::from(ext.close_authority))
+    };
+    if mint_closer == Some(voucher_info.key()) {
+        close_account(CpiContext::new_with_signer(
+            token_program,
+            CloseAccount {
+                account: mint,
+                destination: rent_payer,
+                authority: voucher_info,
+            },
+            signer_seeds,
+        ))?;
+    }
 
     ctx.accounts.business.total_redemptions += 1;
     msg!("Voucher {} redeemed for business {:?}", ctx.accounts.voucher.voucher_id, ctx.accounts.business.key());

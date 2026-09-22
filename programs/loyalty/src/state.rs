@@ -40,6 +40,10 @@ pub struct Receipt {
     pub issued_at: i64,
     pub expires_at: i64,
     pub bump: u8,
+    /// Whoever paid this receipt's rent (the relayer, when the app issues
+    /// it). The rent goes back to exactly this wallet when the receipt is
+    /// claimed or reclaimed, so nobody else can collect it.
+    pub rent_payer: Pubkey,
 }
 
 #[account]
@@ -73,5 +77,24 @@ pub struct Voucher {
     pub mint: Pubkey,
     pub voucher_id: u64,
     pub minted_at: i64,
+    pub bump: u8,
+    /// Whoever paid the rent for this voucher, its NFT and the first holder's
+    /// token account (the relayer, when the app mints it). All of that rent
+    /// goes back to exactly this wallet when the voucher is redeemed.
+    pub rent_payer: Pubkey,
+    /// When the voucher stops being usable (90 days after minting). After
+    /// this it can't be presented, gifted or redeemed, and anyone can close
+    /// it so its rent goes back to `rent_payer`.
+    pub expires_at: i64,
+}
+
+/// Who paid for a card NFT (its mint, the customer's token account and this
+/// record), so that rent goes back to exactly that wallet when the NFT is
+/// burned: at cash-in, or once the card has gone 90 days without a stamp.
+/// Lives at `["card_nft", mint]` and is closed together with the NFT.
+#[account]
+#[derive(InitSpace)]
+pub struct CardNft {
+    pub rent_payer: Pubkey,
     pub bump: u8,
 }

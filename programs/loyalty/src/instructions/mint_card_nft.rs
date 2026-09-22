@@ -4,17 +4,22 @@ use anchor_lang::system_program::{
 };
 use anchor_spl::associated_token::{create as create_associated_token, AssociatedToken, Create};
 use anchor_spl::token_interface::{
-    initialize_mint2, metadata_pointer_initialize, mint_close_authority_initialize,
-    mint_to_checked, non_transferable_mint_initialize, permanent_delegate_initialize,
-    set_authority,
+    burn_checked, close_account, initialize_mint2, metadata_pointer_initialize,
+    mint_close_authority_initialize, mint_to_checked, non_transferable_mint_initialize,
+    permanent_delegate_initialize, set_authority,
     spl_pod::optional_keys::OptionalNonZeroPubkey,
-    spl_token_2022::{extension::ExtensionType, instruction::AuthorityType, state::Mint as MintState},
+    spl_token_2022::{
+        extension::{ExtensionType, StateWithExtensions},
+        instruction::AuthorityType,
+        state::{Account as TokenState, Mint as MintState},
+    },
+    BurnChecked, CloseAccount,
     spl_token_metadata_interface::state::TokenMetadata,
     token_metadata_initialize, InitializeMint2, MetadataPointerInitialize,
     MintCloseAuthorityInitialize, MintToChecked, NonTransferableMintInitialize,
     PermanentDelegateInitialize, SetAuthority, Token2022, TokenMetadataInitialize,
 };
-use crate::state::{Business, LoyaltyCard};
+use crate::state::{Business, CardNft, LoyaltyCard};
 use crate::error::ErrorCode;
 use crate::constants::{CARD_SYMBOL, MAX_VOUCHER_URI_LEN};
 
@@ -204,6 +209,22 @@ pub fn mint_card_nft_handler(ctx: Context<MintCardNft>, uri: String) -> Result<(
         0,
     )?;
 
+    // The customer hands the card the right to close their token account, so
+    // the NFT can be recycled even if they never come back (see
+    // `retire_idle_card_nft`). The customer signs this transaction, so they
+    // can grant it now.
+    set_authority(
+        CpiContext::new(
+            token_program,
+            SetAuthority {
+                current_authority: ctx.accounts.customer.to_account_info(),
+                account_or_mint: ctx.accounts.customer_token.to_account_info(),
+            },
+        ),
+        AuthorityType::CloseAccount,
+        Some(card_key),
+    )?;
+
     // Give up the right to mint, so only one of these tokens can ever exist.
     set_authority(
         CpiContext::new_with_signer(
@@ -215,7 +236,77 @@ pub fn mint_card_nft_handler(ctx: Context<MintCardNft>, uri: String) -> Result<(
         None,
     )?;
 
+    let relayer_key = ctx.accounts.relayer.key();
+    ctx.accounts.record.rent_payer = relayer_key;
+    ctx.accounts.record.bump = ctx.bumps.record;
     Ok(())
+}
+
+/// Burns a card NFT and closes its accounts, sending their rent to
+/// `destination`. Used when a card is cashed in and when an idle card's NFT is
+/// recycled. Copes with a customer who already burned the token themselves.
+/// `customer` is given when the customer signed, so that a token account that
+/// names no close authority (NFTs from before that was granted) can still be
+/// closed.
+pub(crate) fn burn_and_close_card_nft<'info>(
+    card: &AccountInfo<'info>,
+    card_signer: &[&[&[u8]]],
+    card_mint: &AccountInfo<'info>,
+    card_token: &AccountInfo<'info>,
+    customer: Option<&AccountInfo<'info>>,
+    destination: &AccountInfo<'info>,
+    token_program: &AccountInfo<'info>,
+) -> Result<()> {
+    let token_program_id = token_program.key();
+    if *card_token.owner == token_program_id && !card_token.data_is_empty() {
+        let (amount, closer) = {
+            let data = card_token.try_borrow_data()?;
+            let state = StateWithExtensions::<TokenState>::unpack(&data)?;
+            (state.base.amount, Option::<Pubkey>::from(state.base.close_authority))
+        };
+        if amount > 0 {
+            // The card account is the mint's permanent delegate, so it can
+            // burn the token without asking the holder.
+            burn_checked(
+                CpiContext::new_with_signer(
+                    token_program_id,
+                    BurnChecked { mint: card_mint.clone(), from: card_token.clone(), authority: card.clone() },
+                    card_signer,
+                ),
+                amount,
+                0,
+            )?;
+        }
+        if closer == Some(card.key()) {
+            close_account(CpiContext::new_with_signer(
+                token_program_id,
+                CloseAccount { account: card_token.clone(), destination: destination.clone(), authority: card.clone() },
+                card_signer,
+            ))?;
+        } else if let (None, Some(customer)) = (closer, customer) {
+            close_account(CpiContext::new(
+                token_program_id,
+                CloseAccount { account: card_token.clone(), destination: destination.clone(), authority: customer.clone() },
+            ))?;
+        }
+    }
+
+    close_account(CpiContext::new_with_signer(
+        token_program_id,
+        CloseAccount { account: card_mint.clone(), destination: destination.clone(), authority: card.clone() },
+        card_signer,
+    ))
+}
+
+/// Closes an account this program owns and sends its lamports to
+/// `destination`: the same steps Anchor's `close` constraint takes, for an
+/// account that may or may not exist and so can't use that constraint.
+pub(crate) fn close_program_account<'info>(info: &AccountInfo<'info>, destination: &AccountInfo<'info>) -> Result<()> {
+    let destination_start = destination.lamports();
+    **destination.lamports.borrow_mut() = destination_start.checked_add(info.lamports()).unwrap();
+    **info.lamports.borrow_mut() = 0;
+    info.assign(&anchor_lang::system_program::ID);
+    info.resize(0).map_err(Into::into)
 }
 
 #[derive(Accounts)]
@@ -239,6 +330,17 @@ pub struct MintCardNft<'info> {
         bump,
     )]
     pub mint: UncheckedAccount<'info>,
+
+    /// Records who paid for this NFT, so its rent goes back to exactly that
+    /// wallet when the NFT is burned.
+    #[account(
+        init,
+        payer = relayer,
+        space = 8 + CardNft::INIT_SPACE,
+        seeds = [b"card_nft", mint.key().as_ref()],
+        bump,
+    )]
+    pub record: Account<'info, CardNft>,
 
     /// CHECK: The customer's token account for the NFT, created here by the
     /// associated token program, which checks that this is the right address.

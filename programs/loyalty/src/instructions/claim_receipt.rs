@@ -66,7 +66,9 @@ pub struct ClaimReceipt<'info> {
     #[account(mut)]
     pub business: Account<'info, Business>,
 
-    #[account(mut, close = business)]
+    /// Closed here. Its rent goes back to whoever paid for it, never to the
+    /// business: the merchant didn't pay for it.
+    #[account(mut, close = rent_payer, has_one = rent_payer)]
     pub receipt: Account<'info, Receipt>,
 
     #[account(
@@ -86,6 +88,11 @@ pub struct ClaimReceipt<'info> {
     /// customer never needs to hold SOL.
     #[account(mut)]
     pub relayer: Signer<'info>,
+
+    /// The wallet that paid the receipt's rent, recorded in the receipt.
+    /// Receives it back. Normally this is the relayer itself.
+    #[account(mut)]
+    pub rent_payer: SystemAccount<'info>,
 
     pub system_program: Program<'info, System>,
 }
