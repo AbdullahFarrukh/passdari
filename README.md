@@ -56,7 +56,7 @@ running live at [passdari-app.vercel.app](https://passdari-app.vercel.app).
 
 **Program ID:** `HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL`
 
-**Network status: live on devnet.** Program ID `HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL`, deployed and upgraded via Helius's devnet RPC (`solana program deploy --use-rpc`) after the free public endpoint repeatedly failed on large deploys. The program on devnet is the same build the tests run against (441,600 bytes; upgrading to a bigger build also needs the program's storage extended, which the CLI does automatically). Every Rust test still runs locally against LiteSVM — see "Build and test," below — but the actual deployed program is real, live, and independently verifiable on Solana Explorer.
+**Network status: live on devnet.** Program ID `HWvvvwSEounpNXcbD4JUNmniB5YxTcFNYoAestzJJCuL`, deployed and upgraded via Helius's devnet RPC (`solana program deploy --use-rpc`) after the free public endpoint repeatedly failed on large deploys. The program on devnet is the same build the tests run against (549,800 bytes, verified byte-identical against the local build after every upgrade; growing the build also needs the program's storage extended, which the CLI does automatically). Every Rust test still runs locally against LiteSVM — see "Build and test," below — but the actual deployed program is real, live, and independently verifiable on Solana Explorer.
 
 ---
 
@@ -103,6 +103,7 @@ offers a "Clean up" button; see its README for how.
 - **Voucher**: one per minted reward, the on-chain record of a voucher NFT (which business, which id, which mint), and who paid for it. Closed on redemption, with all the rent going back to that payer.
 - **Voucher NFT**: a Token-2022 mint (one per voucher) with exactly one token, held in the customer's own token account. The token is the source of truth for who owns the voucher.
 - **Card NFT**: a Token-2022 mint with one token that can't be moved out of the customer's wallet. A card has one at a time; it is burned when the card's stamps are spent.
+- **CardNft record**: one per card NFT mint, naming who paid for it — since a card gets a new mint every cycle, this is where that payer is remembered so its rent goes back to the right wallet.
 
 There is no `Customer` account, and no `Merchant` account either — both sides
 authenticate the same way: a local Solana keypair, generated from a real BIP-39
@@ -119,6 +120,7 @@ object lives and check it on Solana Explorer:
 | Voucher | `"voucher"`, the business, the voucher id (u64, little-endian) |
 | Voucher NFT (mint) | `"voucher_mint"`, the business, the voucher id |
 | Card NFT (mint) | `"card_mint"`, the card, the card's `nft_cycle` (u32, little-endian) |
+| CardNft record | `"card_nft"`, the card NFT's mint |
 
 ## The voucher NFT
 
