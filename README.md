@@ -302,4 +302,5 @@ support everything used here.
 - Host the NFT pictures somewhere permanent (today the web app serves them, one picture for all vouchers and one for all cards, so they depend on it staying up; ownership itself stays on-chain)
 - A way for a merchant to deregister a business (currently leaves an orphaned account)
 
+
 **Operational note:** the program's upgrade keypair (`target/deploy/loyalty-keypair.json`) is backed up outside the build directory — losing it would mean any redeploy generates a new program ID, silently invalidating every reference to the old one.
