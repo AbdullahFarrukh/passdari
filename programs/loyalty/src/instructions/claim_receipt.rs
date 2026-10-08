@@ -24,6 +24,9 @@ pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Re
         card.customer = ctx.accounts.customer.key();
         card.bump = ctx.bumps.card;
         card.stamps_required_snapshot = business.stamps_required;
+        // The relayer is paying for this card right here, so record it: that is the only wallet its
+        // rent can ever go back to, and the same one its NFT's rent returns to.
+        card.rent_payer = ctx.accounts.relayer.key();
         business.total_cards += 1;
     }
 

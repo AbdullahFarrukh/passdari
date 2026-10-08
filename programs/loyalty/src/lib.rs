@@ -105,6 +105,14 @@ pub mod loyalty {
         crate::instructions::close_expired_voucher::close_expired_voucher_handler(ctx)
     }
 
+    pub fn close_dead_card(ctx: Context<CloseDeadCard>) -> Result<()> {
+        crate::instructions::close_dead_card::close_dead_card_handler(ctx)
+    }
+
+    pub fn migrate_card(ctx: Context<MigrateCard>) -> Result<()> {
+        crate::instructions::migrate_card::migrate_card_handler(ctx)
+    }
+
     pub fn retire_idle_card_nft(ctx: Context<RetireIdleCardNft>) -> Result<()> {
         crate::instructions::retire_idle_card_nft::retire_idle_card_nft_handler(ctx)
     }

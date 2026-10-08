@@ -7,10 +7,10 @@ use anchor_spl::token_interface::{
     spl_token_metadata_interface::state::TokenMetadata, token_metadata_initialize, Mint,
     MintToChecked, SetAuthority, Token2022, TokenAccount, TokenMetadataInitialize,
 };
-use crate::state::{Business, CardNft, LoyaltyCard, Voucher};
+use crate::state::{Business, LoyaltyCard, Voucher};
 use crate::error::ErrorCode;
 use crate::constants::{MAX_VOUCHER_URI_LEN, VOUCHER_SYMBOL, VOUCHER_VALID_SECONDS};
-use crate::instructions::mint_card_nft::{burn_and_close_card_nft, close_program_account};
+use crate::instructions::mint_card_nft::burn_and_close_card_nft;
 
 pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: String) -> Result<()> {
     require!(uri.len() <= MAX_VOUCHER_URI_LEN, ErrorCode::UriTooLong);
@@ -160,19 +160,16 @@ fn retire_card_nft(accounts: &MintVoucher) -> Result<bool> {
         return Ok(false);
     }
 
-    // The NFT's record says who paid for it. NFTs made before these records
-    // existed have none; their rent goes to the relayer signing this cash-in.
-    let record = accounts.card_nft_record.to_account_info();
-    let has_record = *record.owner == crate::ID && !record.data_is_empty();
-    let destination = if has_record {
-        let payer = CardNft::try_deserialize(&mut &record.try_borrow_data()?[..])?.rent_payer;
-        require_keys_eq!(accounts.card_rent_payer.key(), payer, ErrorCode::WrongRentPayer);
-        accounts.card_rent_payer.to_account_info()
-    } else {
+    // The card says who paid for its NFT. A card made before that field existed has it blank, and its
+    // NFT's rent goes to the relayer signing this cash-in, as it did before.
+    let card = &accounts.card;
+    let destination = if card.rent_payer == Pubkey::default() {
         accounts.relayer.to_account_info()
+    } else {
+        require_keys_eq!(accounts.card_rent_payer.key(), card.rent_payer, ErrorCode::WrongRentPayer);
+        accounts.card_rent_payer.to_account_info()
     };
 
-    let card = &accounts.card;
     let bump = [card.bump];
     let seeds: &[&[u8]] = &[b"card", card.business.as_ref(), card.customer.as_ref(), &bump];
     burn_and_close_card_nft(
@@ -184,9 +181,6 @@ fn retire_card_nft(accounts: &MintVoucher) -> Result<bool> {
         &destination,
         &accounts.token_program.to_account_info(),
     )?;
-    if has_record {
-        close_program_account(&record, &destination)?;
-    }
     Ok(true)
 }
 
@@ -262,16 +256,6 @@ pub struct MintVoucher<'info> {
         ),
     )]
     pub card_token: UncheckedAccount<'info>,
-
-    /// CHECK: The card NFT's record of who paid for it. Its address is fixed
-    /// by the NFT's mint; it may not exist (no NFT, or one made before records
-    /// existed), which the handler checks.
-    #[account(
-        mut,
-        seeds = [b"card_nft", card_mint.key().as_ref()],
-        bump,
-    )]
-    pub card_nft_record: UncheckedAccount<'info>,
 
     /// CHECK: Receives the card NFT's rent. When the record exists this must
     /// be the wallet it names, which the handler checks.

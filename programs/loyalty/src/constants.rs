@@ -14,6 +14,11 @@ pub const CARD_SYMBOL: &str = "PSDC";
 /// fixed on the voucher when it is minted, so it can never be shortened later.
 pub const VOUCHER_VALID_SECONDS: i64 = 90 * 24 * 60 * 60;
 
+/// After this long without a stamp, and with no stamps left on it, a card itself can be closed and its
+/// rent returned: one year. Much longer than the 90 days that recycles an idle card's NFT, because that
+/// is reversible — the next stamp brings a fresh NFT — and closing the card is not.
+pub const CARD_DEAD_SECONDS: i64 = 365 * 24 * 60 * 60;
+
 /// After this long without a stamp, a card's NFT can be recycled so its rent
 /// goes back to whoever paid it: 90 days. The stamps stay on the card, and the
 /// next stamp brings a new NFT.

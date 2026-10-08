@@ -19,7 +19,7 @@ use anchor_spl::token_interface::{
     MintCloseAuthorityInitialize, MintToChecked, NonTransferableMintInitialize,
     PermanentDelegateInitialize, SetAuthority, Token2022, TokenMetadataInitialize,
 };
-use crate::state::{Business, CardNft, LoyaltyCard};
+use crate::state::{Business, LoyaltyCard};
 use crate::error::ErrorCode;
 use crate::constants::{CARD_SYMBOL, MAX_VOUCHER_URI_LEN};
 
@@ -36,9 +36,11 @@ pub fn mint_card_nft_handler(ctx: Context<MintCardNft>, uri: String) -> Result<(
     let business = &ctx.accounts.business;
     let card = &ctx.accounts.card;
 
-    // The name is built here, not taken from the client, so a customer can't
-    // pass off a card as another business's.
-    let name = format!("{} stamp card", business.name);
+    // The name is built here, not taken from the client, so a customer can't pass off a card as another
+    // business's. It is the shop's name on its own: the metadata is stored inside the mint and every byte
+    // of it is paid for in rent, so " stamp card" cost 55,880 lamports a card to say what the symbol
+    // (PSDC) and the token's own description already say.
+    let name = business.name.clone();
     let metadata = TokenMetadata {
         update_authority: OptionalNonZeroPubkey::try_from(Some(card.key()))?,
         mint: ctx.accounts.mint.key(),
@@ -236,9 +238,8 @@ pub fn mint_card_nft_handler(ctx: Context<MintCardNft>, uri: String) -> Result<(
         None,
     )?;
 
-    let relayer_key = ctx.accounts.relayer.key();
-    ctx.accounts.record.rent_payer = relayer_key;
-    ctx.accounts.record.bump = ctx.bumps.record;
+    // Who paid for this NFT is already written on the card, set when the card was created. There is no
+    // separate record account any more: it cost 858,520 lamports to hold 32 bytes.
     Ok(())
 }
 
@@ -330,17 +331,6 @@ pub struct MintCardNft<'info> {
         bump,
     )]
     pub mint: UncheckedAccount<'info>,
-
-    /// Records who paid for this NFT, so its rent goes back to exactly that
-    /// wallet when the NFT is burned.
-    #[account(
-        init,
-        payer = relayer,
-        space = 8 + CardNft::INIT_SPACE,
-        seeds = [b"card_nft", mint.key().as_ref()],
-        bump,
-    )]
-    pub record: Account<'info, CardNft>,
 
     /// CHECK: The customer's token account for the NFT, created here by the
     /// associated token program, which checks that this is the right address.

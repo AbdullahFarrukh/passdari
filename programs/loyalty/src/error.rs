@@ -42,4 +42,14 @@ pub enum ErrorCode {
     InvalidStampAmount,
     #[msg("That card cannot hold any more stamps")]
     TooManyStamps,
+    #[msg("This card still has stamps on it")]
+    CardNotEmpty,
+    #[msg("This card has had a stamp in the last year")]
+    CardNotDead,
+    #[msg("This card still has an NFT; recycle that first")]
+    CardNftStillAlive,
+    #[msg("This account is not a loyalty card")]
+    NotACard,
+    #[msg("This card has already been migrated")]
+    CardAlreadyMigrated,
 }

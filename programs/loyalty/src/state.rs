@@ -63,6 +63,14 @@ pub struct LoyaltyCard {
     pub nft_cycle: u32,
     pub stamps_required_snapshot: u8,
     pub bump: u8,
+    /// Whoever paid the rent for this card and for its NFT (the relayer, when the app made it). Every
+    /// lamport of that rent goes back to exactly this wallet: the NFT's when the card is cashed in or
+    /// goes idle, and the card's own when a dead card is closed.
+    ///
+    /// This used to live in a separate `CardNft` account, one per NFT. That account held 32 useful bytes
+    /// and cost 858,520 lamports, three quarters of which was the fixed price of being an account at all.
+    /// Keeping the same field here instead costs 162,560 and saves the rest.
+    pub rent_payer: Pubkey,
 }
 
 #[account]
@@ -88,10 +96,9 @@ pub struct Voucher {
     pub expires_at: i64,
 }
 
-/// Who paid for a card NFT (its mint, the customer's token account and this
-/// record), so that rent goes back to exactly that wallet when the NFT is
-/// burned: at cash-in, or once the card has gone 90 days without a stamp.
-/// Lives at `["card_nft", mint]` and is closed together with the NFT.
+/// The old per-NFT rent record, at `["card_nft", mint]`. Nothing creates these any more — the same
+/// field now lives on the card itself, for a fifth of the rent. The type is kept only so `migrate_card`
+/// can read the true payer out of the ones already on chain and hand their rent back.
 #[account]
 #[derive(InitSpace)]
 pub struct CardNft {

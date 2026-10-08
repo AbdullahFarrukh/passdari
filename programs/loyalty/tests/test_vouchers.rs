@@ -194,7 +194,6 @@ fn mint_voucher_ix(program_id: Pubkey, business_pda: Pubkey, customer: Pubkey, r
             customer_token: ata(customer, mint),
             card_mint,
             card_token: ata(customer, card_mint),
-            card_nft_record: Pubkey::find_program_address(&[b"card_nft", card_mint.as_ref()], &program_id).0,
             card_rent_payer: relayer,
             customer,
             relayer,

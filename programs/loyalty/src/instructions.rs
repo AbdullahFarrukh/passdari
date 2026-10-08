@@ -13,6 +13,8 @@ pub mod redeem_voucher;
 pub mod reclaim_expired_receipt;
 pub mod close_expired_voucher;
 pub mod retire_idle_card_nft;
+pub mod close_dead_card;
+pub mod migrate_card;
 
 pub use initialize::*;
 pub use register_business::*;
@@ -29,3 +31,5 @@ pub use redeem_voucher::*;
 pub use reclaim_expired_receipt::*;
 pub use close_expired_voucher::*;
 pub use retire_idle_card_nft::*;
+pub use close_dead_card::*;
+pub use migrate_card::*;
