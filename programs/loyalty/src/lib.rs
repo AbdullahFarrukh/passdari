@@ -77,6 +77,10 @@ pub mod loyalty {
         crate::instructions::mint_voucher::mint_voucher_handler(ctx, voucher_id, uri)
     }
 
+    pub fn transfer_stamps(ctx: Context<TransferStamps>, amount: u8) -> Result<()> {
+        crate::instructions::transfer_stamps::transfer_stamps_handler(ctx, amount)
+    }
+
     pub fn transfer_voucher(ctx: Context<TransferVoucher>) -> Result<()> {
         crate::instructions::transfer_voucher::transfer_voucher_handler(ctx)
     }

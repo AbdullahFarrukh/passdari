@@ -38,4 +38,8 @@ pub enum ErrorCode {
     CardNftNotIdle,
     #[msg("The rent must go back to the wallet that paid it")]
     WrongRentPayer,
+    #[msg("The number of stamps to transfer must be at least one")]
+    InvalidStampAmount,
+    #[msg("That card cannot hold any more stamps")]
+    TooManyStamps,
 }
