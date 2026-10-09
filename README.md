@@ -428,6 +428,17 @@ support everything used here.
 
 **Before real merchants, in this order:**
 
+- **Get this audited, and move the upgrade authority off a single key.** The program
+  has never had an outside review, and today one wallet can rewrite its rules — which
+  undercuts the claim that a shop's terms are on-chain and cannot be quietly changed.
+  A multisig is the normal answer.
+- **Fix the web app's search surface.** The public directory has no page per shop
+  with its own URL and `LocalBusiness` schema, and its live sitemap is submitting
+  test-data categories to Google, which lowers the quality signal rather than raising
+  it. Both are small, and both want doing before a real shop is listed rather than
+  after. See the passdari-app README, "Before mainnet".
+- **Re-measure every rent figure above on mainnet.** They were measured on devnet,
+  whose rent rate is about 1.37x lower.
 - **Approved merchants only.** The relayer should pay a business's rent only for
   wallets on an approved list, with a daily SOL budget cap on relayer spending.
   Today anyone can register businesses at the relayer's expense (see the
