@@ -145,6 +145,7 @@ pub fn redeem_voucher_handler(ctx: Context<RedeemVoucher>) -> Result<()> {
     }
 
     ctx.accounts.business.total_redemptions += 1;
+    ctx.accounts.business.open_vouchers = ctx.accounts.business.open_vouchers.saturating_sub(1);
     msg!("Voucher {} redeemed for business {:?}", ctx.accounts.voucher.voucher_id, ctx.accounts.business.key());
     Ok(())
 }

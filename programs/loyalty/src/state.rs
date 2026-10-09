@@ -30,6 +30,26 @@ pub struct Business {
     pub total_vouchers_issued: u64,
     pub total_redemptions: u32,
     pub bump: u8,
+    /// Until when this shop has committed to its current reward. It cannot change the reward's terms
+    /// before this date, so a customer collecting towards "free pizza" knows the offer will still be
+    /// called that when they finish. Zero means no commitment has been made yet.
+    ///
+    /// It unlocks *editing*; it does not expire the offer. If a shop lets the date pass without setting
+    /// new terms the reward simply carries on, which is the sane failure: nothing breaks for a customer
+    /// because their shop went quiet.
+    pub terms_locked_until: i64,
+    /// How many stamp cards are open at this shop right now. Up on the first stamp of a new card, down
+    /// when a dead one is closed. `total_cards` counts cards ever started and only goes up; this is the
+    /// live figure, and it is what stops a shop closing while customers still hold stamps.
+    pub open_cards: u32,
+    /// Whoever paid this account's rent — the relayer. It goes back to exactly this wallet if the shop
+    /// ever closes.
+    pub rent_payer: Pubkey,
+    /// How many vouchers are alive right now: up when one is minted, down when it is redeemed or
+    /// cleaned up after expiring. `total_vouchers_issued` only ever goes up and `total_redemptions`
+    /// misses the ones that expired unclaimed, so neither can answer "does this shop still owe
+    /// anybody a reward?" — which is what stops a shop closing out from under a held voucher.
+    pub open_vouchers: u32,
 }
 
 #[account]
@@ -71,6 +91,17 @@ pub struct LoyaltyCard {
     /// and cost 858,520 lamports, three quarters of which was the fixed price of being an account at all.
     /// Keeping the same field here instead costs 162,560 and saves the rest.
     pub rent_payer: Pubkey,
+    /// How many rewards this card has finished.
+    ///
+    /// This used to be worked out as `(lifetime_stamps - stamps) / stamps_required_snapshot`, which only
+    /// held while the snapshot never changed — and that in turn meant a customer who opened a card years
+    /// ago kept those terms for ever. Counting it properly lets the snapshot be refreshed at each
+    /// cash-in (finish the card you have under its old terms, start the next under the current ones)
+    /// and removes a derivation three separate screens had to agree on.
+    ///
+    /// New fields go at the END. Putting one in the middle would shift every field after it and make
+    /// every card already on chain unreadable.
+    pub rewards_earned: u32,
 }
 
 #[account]

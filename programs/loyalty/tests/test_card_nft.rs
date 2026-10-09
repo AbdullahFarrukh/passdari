@@ -69,6 +69,7 @@ fn setup_base(svm: &mut LiteSVM, program_id: Pubkey, stamps_required: u8) -> (Ke
             min_purchase_amount: 100_000,
             currency: "PKR".to_string(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::RegisterBusiness {
@@ -667,9 +668,10 @@ fn test_older_card_with_no_recorded_payer_still_cashes_in() {
 
     // A card created before the payer was recorded has it blank. Its NFT's rent then goes to the
     // relayer signing the cash-in, exactly as it did before the field existed.
+    // rent_payer is bytes 103..135; rewards_earned now follows it, so blank the field itself rather
+    // than the tail of the account.
     let mut account = svm.get_account(&card_pda).unwrap();
-    let len = account.data.len();
-    account.data[len - 32..].fill(0);
+    account.data[103..135].fill(0);
     svm.set_account(card_pda, account).unwrap();
 
     let res = cash_in(&mut svm, program_id, business_pda, &customer, &relayer, 0, 0);

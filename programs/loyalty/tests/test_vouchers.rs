@@ -55,6 +55,7 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Ke
             min_purchase_amount: 100_000,
             currency: "PKR".to_string(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::RegisterBusiness {
@@ -402,6 +403,7 @@ fn test_raising_threshold_does_not_void_earned_reward() {
             stamps_required: 20,
             min_purchase_amount: 100_000,
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::UpdateBusinessConfig {
@@ -825,11 +827,11 @@ fn test_gift_after_cancelling_still_returns_the_rent() {
 
 const NINETY_DAYS: i64 = 90 * 24 * 60 * 60;
 
-fn close_expired_ix(program_id: Pubkey, voucher: Pubkey, mint: Pubkey, holder_token: Pubkey, rent_payer: Pubkey) -> Instruction {
+fn close_expired_ix(program_id: Pubkey, business: Pubkey, voucher: Pubkey, mint: Pubkey, holder_token: Pubkey, rent_payer: Pubkey) -> Instruction {
     Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::CloseExpiredVoucher {}.data(),
-        loyalty::accounts::CloseExpiredVoucher { voucher, mint, holder_token, rent_payer, token_program: spl_token_2022::ID }
+        loyalty::accounts::CloseExpiredVoucher { voucher, business, mint, holder_token, rent_payer, token_program: spl_token_2022::ID }
             .to_account_metas(None),
     )
 }
@@ -892,11 +894,11 @@ fn test_expired_voucher_is_closed_and_all_its_rent_returned() {
     let holder_token = ata(customer.pubkey(), mint_pda);
     let stranger = funded_stranger(&mut svm);
 
-    let early = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
+    let early = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
     assert_fails_with(early, "VoucherNotExpired");
 
     warp(&mut svm, NINETY_DAYS + 1);
-    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
+    let res = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &stranger, &[&stranger]);
     assert!(res.is_ok(), "anyone can close an expired voucher: {:?}", res);
     assert!(res.unwrap().logs.iter().any(|l| l.contains("Instruction: BurnChecked")), "the token is burned");
     assert!(is_gone(&svm, mint_pda) && is_gone(&svm, holder_token) && is_gone(&svm, voucher_pda), "every account is closed");
@@ -915,7 +917,7 @@ fn test_expired_voucher_left_presented_is_still_closed() {
     let holder_token = ata(customer.pubkey(), mint_pda);
 
     warp(&mut svm, NINETY_DAYS + 1);
-    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &relayer, &[&relayer]);
+    let res = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, holder_token, relayer.pubkey())], &relayer, &[&relayer]);
     assert!(res.is_ok(), "a frozen voucher is thawed and burned: {:?}", res);
     assert!(is_gone(&svm, mint_pda) && is_gone(&svm, holder_token) && is_gone(&svm, voucher_pda));
 }
@@ -933,7 +935,7 @@ fn test_expired_gift_that_was_never_presented() {
     let recipient_token = ata(recipient.pubkey(), mint_pda);
 
     warp(&mut svm, NINETY_DAYS + 1);
-    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, recipient_token, relayer.pubkey())], &relayer, &[&relayer]);
+    let res = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, recipient_token, relayer.pubkey())], &relayer, &[&relayer]);
     assert!(res.is_ok(), "an expired gift is closed too: {:?}", res);
     assert!(is_gone(&svm, mint_pda) && is_gone(&svm, voucher_pda), "the NFT and the voucher record are closed");
     // The recipient never signed anything, so the program can't close their account; it stays theirs, empty.
@@ -954,7 +956,7 @@ fn test_expired_voucher_needs_the_account_that_really_holds_it() {
     assert!(send(&mut svm, &[open], &stranger, &[&stranger]).is_ok());
 
     warp(&mut svm, NINETY_DAYS + 1);
-    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, ata(stranger.pubkey(), mint_pda), relayer.pubkey())], &stranger, &[&stranger]);
+    let res = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, ata(stranger.pubkey(), mint_pda), relayer.pubkey())], &stranger, &[&stranger]);
     assert_fails_with(res, "NotVoucherHolder");
     assert!(!is_gone(&svm, voucher_pda), "nothing was closed while the token still exists");
 }
@@ -969,6 +971,6 @@ fn test_expired_voucher_rent_cannot_be_redirected() {
     let stranger = funded_stranger(&mut svm);
 
     warp(&mut svm, NINETY_DAYS + 1);
-    let res = send(&mut svm, &[close_expired_ix(program_id, voucher_pda, mint_pda, ata(customer.pubkey(), mint_pda), stranger.pubkey())], &stranger, &[&stranger]);
+    let res = send(&mut svm, &[close_expired_ix(program_id, business_pda, voucher_pda, mint_pda, ata(customer.pubkey(), mint_pda), stranger.pubkey())], &stranger, &[&stranger]);
     assert_fails_with(res, "ConstraintHasOne");
 }

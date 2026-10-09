@@ -24,6 +24,11 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: Str
     require!(card.stamps >= card.stamps_required_snapshot, ErrorCode::NotEnoughStamps);
 
     card.stamps -= card.stamps_required_snapshot;
+    card.rewards_earned = card.rewards_earned.saturating_add(1);
+    // The card just finished under the terms it was opened with. Its next round uses whatever the shop
+    // asks for today — the same way a paper punch card works: you finish the one in your pocket, and
+    // the next one you are handed has the current rules printed on it.
+    card.stamps_required_snapshot = business.stamps_required;
 
     voucher.business = business.key();
     voucher.owner = ctx.accounts.customer.key();
@@ -35,6 +40,7 @@ pub fn mint_voucher_handler(ctx: Context<MintVoucher>, voucher_id: u64, uri: Str
     voucher.bump = ctx.bumps.voucher;
 
     business.total_vouchers_issued += 1;
+    business.open_vouchers += 1;
 
     // The name is built here, not taken from the client, so a customer can't
     // pass off a voucher as another business's reward.

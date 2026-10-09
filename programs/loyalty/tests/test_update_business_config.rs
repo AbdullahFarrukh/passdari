@@ -26,6 +26,7 @@ fn register(svm: &mut LiteSVM, program_id: Pubkey, owner: &Keypair, relayer: &Ke
             min_purchase_amount: 100_000,
             currency: "PKR".to_string(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::RegisterBusiness {
@@ -65,6 +66,7 @@ fn test_owner_can_update_config() {
             stamps_required: 12,
             min_purchase_amount: 150_000,
             receipt_ttl_seconds: 600,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::UpdateBusinessConfig {
@@ -115,6 +117,7 @@ fn test_impostor_cannot_update_config() {
             stamps_required: 1,
             min_purchase_amount: 1,
             receipt_ttl_seconds: 1,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::UpdateBusinessConfig {

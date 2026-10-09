@@ -27,7 +27,11 @@ pub fn claim_receipt_handler(ctx: Context<ClaimReceipt>, secret: [u8; 32]) -> Re
         // The relayer is paying for this card right here, so record it: that is the only wallet its
         // rent can ever go back to, and the same one its NFT's rent returns to.
         card.rent_payer = ctx.accounts.relayer.key();
+        card.rewards_earned = 0;
         business.total_cards += 1;
+        // total_cards counts cards ever started; open_cards is how many are alive right now, and it is
+        // what stops a shop closing while customers still hold stamps.
+        business.open_cards += 1;
     }
 
     if card.last_stamp_ts != 0 {

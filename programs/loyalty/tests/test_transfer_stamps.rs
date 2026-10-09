@@ -38,6 +38,7 @@ fn register(
             min_purchase_amount: 100_000,
             currency: "PKR".to_string(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::RegisterBusiness {

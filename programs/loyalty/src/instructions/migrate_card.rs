@@ -21,8 +21,15 @@ use crate::instructions::mint_card_nft::close_program_account;
 /// recorded payer. The relayer should therefore migrate its own cards promptly: whoever gets there
 /// first is who the rent returns to afterwards.
 
-// Offsets inside the old (103-byte) card: 8 discriminator, 32 business, 32 customer, then the counters.
-const OLD_CARD_LEN: usize = 103;
+// Offsets inside an old card: 8 discriminator, 32 business, 32 customer, then the counters.
+//
+// Cards have grown twice. 103 bytes is the original; 135 added `rent_payer`; the current shape adds
+// `rewards_earned`. A card at any older size is brought all the way to the current one here.
+const CARD_LEN_V1: usize = 103; // before rent_payer
+const CARD_LEN_V2: usize = 135; // before rewards_earned
+const STAMPS_AT: usize = 72;
+const LIFETIME_STAMPS_AT: usize = 93;
+const SNAPSHOT_AT: usize = 101;
 const BUSINESS_AT: usize = 8;
 const CUSTOMER_AT: usize = 40;
 const NFT_CYCLE_AT: usize = 97;
@@ -37,11 +44,14 @@ pub fn migrate_card_handler(ctx: Context<MigrateCard>) -> Result<()> {
     let new_len = 8 + LoyaltyCard::INIT_SPACE;
 
     require_keys_eq!(*card_info.owner, crate::ID, ErrorCode::NotACard);
+    // Which shape this card is in decides what has to be filled in. A card that already carries its
+    // rent payer must keep it — rewriting that would quietly hand its rent to whoever ran the migration.
+    let old_len = card_info.data_len();
     {
         let data = card_info.try_borrow_data()?;
-        require!(data.len() >= OLD_CARD_LEN, ErrorCode::NotACard);
+        require!(data.len() >= CARD_LEN_V1, ErrorCode::NotACard);
         require!(data[..8] == LoyaltyCard::DISCRIMINATOR[..], ErrorCode::NotACard);
-        require!(data.len() == OLD_CARD_LEN, ErrorCode::CardAlreadyMigrated);
+        require!(data.len() < new_len, ErrorCode::CardAlreadyMigrated);
 
         // Prove this really is the card its own contents claim to be, which is what the seeds would
         // have checked had Anchor been able to load it.
@@ -82,7 +92,19 @@ pub fn migrate_card_handler(ctx: Context<MigrateCard>) -> Result<()> {
     // `resize` zeroes the bytes it adds, so the new field starts blank before it is written below.
     card_info.resize(new_len)?;
 
-    // Prefer the truth the old record holds over the word of whoever is calling.
+    // Work out the rewards already finished BEFORE anything is rewritten. Until now this was derived as
+    // (lifetime - stamps) / snapshot, and at this moment that derivation is still correct, because the
+    // snapshot has not yet been allowed to change. This is the one chance to capture it.
+    let rewards_earned = {
+        let data = card_info.try_borrow_data()?;
+        let stamps = data[STAMPS_AT] as u32;
+        let lifetime = u32::from_le_bytes(data[LIFETIME_STAMPS_AT..LIFETIME_STAMPS_AT + 4].try_into().unwrap());
+        let snapshot = data[SNAPSHOT_AT] as u32;
+        if snapshot > 0 { lifetime.saturating_sub(stamps) / snapshot } else { 0 }
+    };
+
+    // Prefer the truth the old record holds over the word of whoever is calling. Only matters for a
+    // card old enough to have no payer of its own; for a newer one the record is closed anyway.
     let record = ctx.accounts.record.to_account_info();
     let payer = if *record.owner == crate::ID && !record.data_is_empty() {
         let recorded = CardNft::try_deserialize(&mut &record.try_borrow_data()?[..])?.rent_payer;
@@ -94,7 +116,10 @@ pub fn migrate_card_handler(ctx: Context<MigrateCard>) -> Result<()> {
     };
 
     let mut data = card_info.try_borrow_mut_data()?;
-    data[OLD_CARD_LEN..new_len].copy_from_slice(payer.as_ref());
+    if old_len < CARD_LEN_V2 {
+        data[CARD_LEN_V1..CARD_LEN_V2].copy_from_slice(payer.as_ref());
+    }
+    data[CARD_LEN_V2..new_len].copy_from_slice(&rewards_earned.to_le_bytes());
     Ok(())
 }
 

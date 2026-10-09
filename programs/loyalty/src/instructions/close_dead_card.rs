@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::state::LoyaltyCard;
+use crate::state::{Business, LoyaltyCard};
 use crate::error::ErrorCode;
 use crate::constants::CARD_DEAD_SECONDS;
 
@@ -39,7 +39,10 @@ pub fn close_dead_card_handler(ctx: Context<CloseDeadCard>) -> Result<()> {
     let mint = ctx.accounts.card_mint.to_account_info();
     require!(mint.data_is_empty(), ErrorCode::CardNftStillAlive);
 
-    msg!("Closing a dead card at {}", card.business);
+    let business_key = card.business;
+    // One fewer card open at this shop, which is what will eventually let the shop itself close.
+    ctx.accounts.business.open_cards = ctx.accounts.business.open_cards.saturating_sub(1);
+    msg!("Closing a dead card at {}", business_key);
     Ok(())
 }
 
@@ -53,6 +56,10 @@ pub struct CloseDeadCard<'info> {
         bump = card.bump,
     )]
     pub card: Account<'info, LoyaltyCard>,
+
+    /// The shop this card belongs to, so its count of open cards comes down.
+    #[account(mut, address = card.business)]
+    pub business: Account<'info, Business>,
 
     /// CHECK: The card's current NFT mint. Only its address matters, fixed by the card and its cycle;
     /// the handler requires that nothing lives there.

@@ -70,4 +70,22 @@ pub enum ErrorCode {
     StampsRequiredTooHigh,
     #[msg("A receipt must last between a minute and a day")]
     ReceiptTtlOutOfRange,
+    #[msg("That date has already passed")]
+    TermsLockInThePast,
+    #[msg("A reward can be committed to for at most a year")]
+    TermsLockTooLong,
+    #[msg("Ending an offer early needs at least two weeks' notice")]
+    TermsNoticeTooShort,
+    #[msg("This reward is committed until its end date and cannot be changed yet")]
+    RewardTermsLocked,
+    #[msg("This shop still has open stamp cards")]
+    ShopStillHasOpenCards,
+    #[msg("This shop's reward is still running")]
+    ShopOfferStillRunning,
+    #[msg("This shop still owes customers unredeemed rewards")]
+    ShopStillOwesVouchers,
+    #[msg("This account is not a business")]
+    NotABusiness,
+    #[msg("This business has already been migrated")]
+    BusinessAlreadyMigrated,
 }

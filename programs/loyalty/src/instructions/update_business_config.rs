@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::state::Business;
-use crate::instructions::business_rules::check_settings;
+use crate::instructions::business_rules::{check_settings, check_terms_lock};
+use crate::error::ErrorCode;
 
 #[derive(Accounts)]
 pub struct UpdateBusinessConfig<'info> {
@@ -39,6 +40,7 @@ pub fn update_business_config_handler(
     stamps_required: u8,
     min_purchase_amount: u64,
     receipt_ttl_seconds: u32,
+    terms_locked_until: i64,
 ) -> Result<()> {
     // The name and category are not being changed, but they are passed through the same check so the
     // rules live in exactly one place.
@@ -48,7 +50,16 @@ pub fn update_business_config_handler(
     };
     check_settings(&name, &category, &reward_label, stamps_required, receipt_ttl_seconds)?;
 
+    // The heart of it: while a shop's promise stands, it cannot change what it promised. A customer
+    // collecting towards "free pizza until 2 February" will still be collecting towards free pizza
+    // when they finish.
+    let now = Clock::get()?.unix_timestamp;
+    let current_lock = ctx.accounts.business.terms_locked_until;
+    require!(now >= current_lock, ErrorCode::RewardTermsLocked);
+    check_terms_lock(now, current_lock, terms_locked_until)?;
+
     let business = &mut ctx.accounts.business;
+    business.terms_locked_until = terms_locked_until;
     business.reward_label = reward_label;
     business.stamps_required = stamps_required;
     business.min_purchase_amount = min_purchase_amount;

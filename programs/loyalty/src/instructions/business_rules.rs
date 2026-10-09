@@ -27,6 +27,35 @@ pub const MAX_STAMPS_REQUIRED: u8 = 100;
 pub const MIN_RECEIPT_TTL_SECONDS: u32 = 60;
 pub const MAX_RECEIPT_TTL_SECONDS: u32 = 24 * 60 * 60;
 
+/// A shop may commit to its reward for at most a year. Someone will type a date in 2099 and lock
+/// themselves out for decades otherwise.
+pub const MAX_TERMS_LOCK_SECONDS: i64 = 365 * 24 * 60 * 60;
+
+/// How much notice a shop must give before its terms unlock. It may always commit for longer, and it
+/// may wind an offer down early — but never to less than this, so a customer part-way through a card
+/// always has time to finish.
+pub const MIN_TERMS_NOTICE_SECONDS: i64 = 14 * 24 * 60 * 60;
+
+/// Checks a proposed "committed until" date against the clock and against the shop's current promise.
+///
+/// `current_lock` is what the shop has already promised. A shop may always extend it. It may bring it
+/// forward — winding an offer down — but not to less than two weeks away, because people are collecting
+/// against it right now.
+pub fn check_terms_lock(now: i64, current_lock: i64, proposed: i64) -> Result<()> {
+    // Zero means "no commitment". Committing is optional — it is a promise a shop chooses to make, not
+    // one the program imposes — so a shop that offers no end date simply stays editable.
+    if proposed == 0 {
+        return Ok(());
+    }
+    require!(proposed >= now, ErrorCode::TermsLockInThePast);
+    require!(proposed - now <= MAX_TERMS_LOCK_SECONDS, ErrorCode::TermsLockTooLong);
+    // Bringing the promise forward is allowed, but only with notice.
+    if proposed < current_lock {
+        require!(proposed - now >= MIN_TERMS_NOTICE_SECONDS, ErrorCode::TermsNoticeTooShort);
+    }
+    Ok(())
+}
+
 pub fn check_settings(
     name: &str,
     category: &str,

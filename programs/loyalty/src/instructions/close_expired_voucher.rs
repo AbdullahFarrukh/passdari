@@ -7,7 +7,7 @@ use anchor_spl::token_interface::{
     },
     thaw_account, BurnChecked, CloseAccount, Mint, ThawAccount, Token2022,
 };
-use crate::state::Voucher;
+use crate::state::{Business, Voucher};
 use crate::error::ErrorCode;
 
 /// Closes a voucher that was never used within its 90 days: burns the NFT,
@@ -19,6 +19,11 @@ use crate::error::ErrorCode;
 pub struct CloseExpiredVoucher<'info> {
     #[account(mut, close = rent_payer, has_one = mint, has_one = rent_payer)]
     pub voucher: Account<'info, Voucher>,
+
+    /// The shop the voucher belongs to. Present only so its count of rewards still owed comes down —
+    /// a voucher that expired unclaimed is no longer owed to anyone.
+    #[account(mut, address = voucher.business)]
+    pub business: Account<'info, Business>,
 
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
@@ -116,6 +121,7 @@ pub fn close_expired_voucher_handler(ctx: Context<CloseExpiredVoucher>) -> Resul
         ))?;
     }
 
+    ctx.accounts.business.open_vouchers = ctx.accounts.business.open_vouchers.saturating_sub(1);
     msg!("Expired voucher {} closed", ctx.accounts.voucher.voucher_id);
     Ok(())
 }

@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::state::Business;
 use crate::error::ErrorCode;
-use crate::instructions::business_rules::{check_settings, MAX_CURRENCY_LEN};
+use crate::instructions::business_rules::{check_settings, check_terms_lock, MAX_CURRENCY_LEN};
 
 #[derive(Accounts)]
 pub struct RegisterBusiness<'info> {
@@ -36,8 +36,13 @@ pub fn register_business_handler(
     min_purchase_amount: u64,
     currency: String,
     receipt_ttl_seconds: u32,
+    terms_locked_until: i64,
 ) -> Result<()> {
     check_settings(&name, &category, &reward_label, stamps_required, receipt_ttl_seconds)?;
+    let now = Clock::get()?.unix_timestamp;
+    // A shop with no commitment yet passes `now`, which is allowed: the notice rule only bites when a
+    // promise already on the books is being brought forward.
+    check_terms_lock(now, 0, terms_locked_until)?;
     require!(currency.len() <= MAX_CURRENCY_LEN, ErrorCode::CurrencyTooLong);
 
     let business = &mut ctx.accounts.business;
@@ -54,6 +59,10 @@ pub fn register_business_handler(
     business.total_vouchers_issued = 0;
     business.total_redemptions = 0;
     business.bump = ctx.bumps.business;
+    business.terms_locked_until = terms_locked_until;
+    business.open_cards = 0;
+    business.rent_payer = ctx.accounts.relayer.key();
+    business.open_vouchers = 0;
 
     msg!("Business registered: {:?}", business.authority);
     Ok(())

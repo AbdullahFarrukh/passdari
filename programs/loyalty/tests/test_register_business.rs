@@ -41,6 +41,7 @@ fn test_register_business() {
             min_purchase_amount: 100_000, // 1000.00 PKR in minor units
             currency: "PKR".to_string(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }
         .data(),
         loyalty::accounts::RegisterBusiness {
@@ -88,6 +89,7 @@ fn test_register_business_twice_fails() {
                 min_purchase_amount: 100_000,
                 currency: "PKR".to_string(),
                 receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
             }
             .data(),
             loyalty::accounts::RegisterBusiness {
@@ -158,6 +160,7 @@ fn test_multiple_businesses_dont_collide() {
                 min_purchase_amount: *min_purchase_amount,
                 currency: "PKR".to_string(),
                 receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
             }
             .data(),
             loyalty::accounts::RegisterBusiness {

@@ -28,6 +28,7 @@ pub mod loyalty {
         min_purchase_amount: u64,
         currency: String,
         receipt_ttl_seconds: u32,
+        terms_locked_until: i64,
     ) -> Result<()> {
         crate::instructions::register_business::register_business_handler(
             ctx,
@@ -38,6 +39,7 @@ pub mod loyalty {
             min_purchase_amount,
             currency,
             receipt_ttl_seconds,
+            terms_locked_until,
         )
     }
 
@@ -47,6 +49,7 @@ pub mod loyalty {
         stamps_required: u8,
         min_purchase_amount: u64,
         receipt_ttl_seconds: u32,
+        terms_locked_until: i64,
     ) -> Result<()> {
         crate::instructions::update_business_config::update_business_config_handler(
             ctx,
@@ -54,6 +57,7 @@ pub mod loyalty {
             stamps_required,
             min_purchase_amount,
             receipt_ttl_seconds,
+            terms_locked_until,
         )
     }
 
@@ -109,8 +113,16 @@ pub mod loyalty {
         crate::instructions::close_dead_card::close_dead_card_handler(ctx)
     }
 
+    pub fn close_business(ctx: Context<CloseBusiness>) -> Result<()> {
+        crate::instructions::close_business::close_business_handler(ctx)
+    }
+
     pub fn migrate_card(ctx: Context<MigrateCard>) -> Result<()> {
         crate::instructions::migrate_card::migrate_card_handler(ctx)
+    }
+
+    pub fn migrate_business(ctx: Context<MigrateBusiness>) -> Result<()> {
+        crate::instructions::migrate_business::migrate_business_handler(ctx)
     }
 
     pub fn retire_idle_card_nft(ctx: Context<RetireIdleCardNft>) -> Result<()> {

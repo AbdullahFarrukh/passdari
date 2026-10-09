@@ -71,6 +71,7 @@ fn setup(svm: &mut LiteSVM, program_id: Pubkey, stamps_required: u8) -> World {
         &loyalty::instruction::RegisterBusiness {
             name: "Coffee Corner".into(), category: "cafe".into(), reward_label: "Free coffee".into(),
             stamps_required, min_purchase_amount: 100_000, currency: "PKR".into(), receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }.data(),
         loyalty::accounts::RegisterBusiness {
             business, authority: owner.pubkey(), relayer: relayer.pubkey(), system_program: system_program::ID,
@@ -161,6 +162,7 @@ fn close_dead(svm: &mut LiteSVM, program_id: Pubkey, w: &World, cycle: u32, rent
         &loyalty::instruction::CloseDeadCard {}.data(),
         loyalty::accounts::CloseDeadCard {
             card: w.card,
+            business: w.business,
             card_mint: pda(&[b"card_mint", w.card.as_ref(), &cycle.to_le_bytes()], &program_id),
             rent_payer,
         }.to_account_metas(None),
@@ -465,6 +467,7 @@ fn test_a_shop_cannot_ask_for_zero_stamps() {
             name: "Coffee Corner".into(), category: "cafe".into(), reward_label: "Free coffee".into(),
             stamps_required: stamps, min_purchase_amount: 100_000, currency: "PKR".into(),
             receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }.data(),
         loyalty::accounts::RegisterBusiness {
             business, authority: owner.pubkey(), relayer: relayer.pubkey(), system_program: system_program::ID,
@@ -483,6 +486,7 @@ fn test_a_shop_cannot_ask_for_zero_stamps() {
         &loyalty::instruction::UpdateBusinessConfig {
             reward_label: "Free coffee".into(),
             stamps_required: stamps, min_purchase_amount: 100_000, receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }.data(),
         loyalty::accounts::UpdateBusinessConfig { business, authority: owner.pubkey() }.to_account_metas(None),
     );
@@ -509,6 +513,7 @@ fn test_editing_the_reward_terms_leaves_cards_in_progress_alone() {
         &loyalty::instruction::UpdateBusinessConfig {
             reward_label: "Free karahi".into(), stamps_required: 20,
             min_purchase_amount: 999_000, receipt_ttl_seconds: 3600,
+            terms_locked_until: 0,
         }.data(),
         loyalty::accounts::UpdateBusinessConfig { business: w.business, authority: w.owner.pubkey() }
             .to_account_metas(None),
@@ -545,6 +550,7 @@ fn test_a_stranger_cannot_edit_someone_elses_shop() {
         &loyalty::instruction::UpdateBusinessConfig {
             reward_label: "Free everything".into(),
             stamps_required: 1, min_purchase_amount: 0, receipt_ttl_seconds: 300,
+            terms_locked_until: 0,
         }.data(),
         loyalty::accounts::UpdateBusinessConfig { business: w.business, authority: stranger.pubkey() }
             .to_account_metas(None),
