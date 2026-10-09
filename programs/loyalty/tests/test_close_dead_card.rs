@@ -481,7 +481,7 @@ fn test_a_shop_cannot_ask_for_zero_stamps() {
     let edit = |stamps: u8| Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Coffee Corner".into(), category: "cafe".into(), reward_label: "Free coffee".into(),
+            reward_label: "Free coffee".into(),
             stamps_required: stamps, min_purchase_amount: 100_000, receipt_ttl_seconds: 300,
         }.data(),
         loyalty::accounts::UpdateBusinessConfig { business, authority: owner.pubkey() }.to_account_metas(None),
@@ -491,10 +491,9 @@ fn test_a_shop_cannot_ask_for_zero_stamps() {
     assert!(send(&mut svm, &[edit(12)], &relayer, &[&owner, &relayer]).is_ok(), "a sensible change goes through");
 }
 
-/// A merchant editing their shop: everything the registration page asks for, including the name and
-/// category, which could not be changed before.
+/// A merchant editing their reward terms, and what that does to a card already being collected.
 #[test]
-fn test_a_merchant_can_edit_every_setting_without_moving_the_goalposts() {
+fn test_editing_the_reward_terms_leaves_cards_in_progress_alone() {
     let program_id = loyalty::id();
     let mut svm = LiteSVM::new();
     let w = setup(&mut svm, program_id, 8);
@@ -508,7 +507,6 @@ fn test_a_merchant_can_edit_every_setting_without_moving_the_goalposts() {
     let edit = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Blue Door Cafe".into(), category: "Restaurant".into(),
             reward_label: "Free karahi".into(), stamps_required: 20,
             min_purchase_amount: 999_000, receipt_ttl_seconds: 3600,
         }.data(),
@@ -519,8 +517,8 @@ fn test_a_merchant_can_edit_every_setting_without_moving_the_goalposts() {
 
     let b = loyalty::Business::try_deserialize(
         &mut svm.get_account(&w.business).unwrap().data.as_slice()).unwrap();
-    assert_eq!(b.name, "Blue Door Cafe", "the name can be changed now");
-    assert_eq!(b.category, "Restaurant", "and the category");
+    assert_eq!(b.name, "Coffee Corner", "the shop's name is its identity and cannot be edited");
+    assert_eq!(b.category, "cafe", "nor can its category");
     assert_eq!(b.reward_label, "Free karahi");
     assert_eq!(b.stamps_required, 20);
     assert_eq!(b.min_purchase_amount, 999_000);
@@ -545,7 +543,7 @@ fn test_a_stranger_cannot_edit_someone_elses_shop() {
     let ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Stolen".into(), category: "cafe".into(), reward_label: "Free everything".into(),
+            reward_label: "Free everything".into(),
             stamps_required: 1, min_purchase_amount: 0, receipt_ttl_seconds: 300,
         }.data(),
         loyalty::accounts::UpdateBusinessConfig { business: w.business, authority: stranger.pubkey() }
@@ -555,5 +553,5 @@ fn test_a_stranger_cannot_edit_someone_elses_shop() {
     assert!(res.is_err(), "a stranger must not be able to rewrite a shop's terms");
     let b = loyalty::Business::try_deserialize(
         &mut svm.get_account(&w.business).unwrap().data.as_slice()).unwrap();
-    assert_eq!(b.name, "Coffee Corner", "the shop was left alone");
+    assert_eq!(b.reward_label, "Free coffee", "the shop's terms were left alone");
 }

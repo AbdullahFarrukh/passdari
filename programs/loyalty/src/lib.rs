@@ -43,8 +43,6 @@ pub mod loyalty {
 
         pub fn update_business_config(
         ctx: Context<UpdateBusinessConfig>,
-        name: String,
-        category: String,
         reward_label: String,
         stamps_required: u8,
         min_purchase_amount: u64,
@@ -52,8 +50,6 @@ pub mod loyalty {
     ) -> Result<()> {
         crate::instructions::update_business_config::update_business_config_handler(
             ctx,
-            name,
-            category,
             reward_label,
             stamps_required,
             min_purchase_amount,

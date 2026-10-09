@@ -398,8 +398,6 @@ fn test_raising_threshold_does_not_void_earned_reward() {
     let update_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Coffee Corner".to_string(),
-            category: "cafe".to_string(),
             reward_label: "Free coffee".to_string(),
             stamps_required: 20,
             min_purchase_amount: 100_000,

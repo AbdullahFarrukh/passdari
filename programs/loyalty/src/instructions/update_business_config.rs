@@ -15,33 +15,45 @@ pub struct UpdateBusinessConfig<'info> {
     pub authority: Signer<'info>,
 }
 
-/// Everything a merchant filled in when they registered, editable afterwards — the name and category
-/// included, which they were not before.
+/// The terms of the shop's reward, changeable by the shop itself.
 ///
-/// What this deliberately does NOT change: the stamp cards customers already hold. Each card keeps the
-/// `stamps_required_snapshot` it was opened under, so a shop that raises its price from 8 stamps to 10
+/// The name and the category are deliberately NOT here. They are the shop's identity, not its offer:
+/// the name is written into every card and voucher NFT at the moment it is minted and is never
+/// rewritten, so letting it change would leave tokens in customers' wallets naming a shop that no
+/// longer calls itself that — and would let a shop rename itself as another. The category is what the
+/// public directory files it under. Both are fixed at registration.
+///
+/// What this does NOT change either: the stamp cards customers already hold. Each keeps the
+/// `stamps_required_snapshot` it was opened under, so a shop raising its price from 8 stamps to 10
 /// cannot move the goalposts on someone already seven stamps in. The new number applies to cards opened
-/// from now on. The same goes for NFTs already minted: a voucher or card NFT carries the name it was
-/// given at the time, because that text lives inside the token and is not rewritten later.
+/// from then on.
+///
+/// The reward's NAME is different, and worth being clear about: it is read from the shop at the moment
+/// a voucher is minted, not stored on the card. A customer part-way through a card will receive
+/// whatever the reward is called when they cash in. That is deliberate — a shop that stops selling
+/// croissants should not owe five hundred cards a croissant — and the customer's own screen shows the
+/// current reward on their card, so what they see is always what they will get.
 pub fn update_business_config_handler(
     ctx: Context<UpdateBusinessConfig>,
-    name: String,
-    category: String,
     reward_label: String,
     stamps_required: u8,
     min_purchase_amount: u64,
     receipt_ttl_seconds: u32,
 ) -> Result<()> {
+    // The name and category are not being changed, but they are passed through the same check so the
+    // rules live in exactly one place.
+    let (name, category) = {
+        let business = &ctx.accounts.business;
+        (business.name.clone(), business.category.clone())
+    };
     check_settings(&name, &category, &reward_label, stamps_required, receipt_ttl_seconds)?;
 
     let business = &mut ctx.accounts.business;
-    business.name = name;
-    business.category = category;
     business.reward_label = reward_label;
     business.stamps_required = stamps_required;
     business.min_purchase_amount = min_purchase_amount;
     business.receipt_ttl_seconds = receipt_ttl_seconds;
 
-    msg!("Business settings updated: {:?}", business.authority);
+    msg!("Reward terms updated: {:?}", business.authority);
     Ok(())
 }

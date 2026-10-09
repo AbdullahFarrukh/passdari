@@ -61,8 +61,6 @@ fn test_owner_can_update_config() {
     let update_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Coffee Corner".to_string(),
-            category: "cafe".to_string(),
             reward_label: "Free large coffee".to_string(),
             stamps_required: 12,
             min_purchase_amount: 150_000,
@@ -113,8 +111,6 @@ fn test_impostor_cannot_update_config() {
     let update_ix = Instruction::new_with_bytes(
         program_id,
         &loyalty::instruction::UpdateBusinessConfig {
-            name: "Coffee Corner".to_string(),
-            category: "cafe".to_string(),
             reward_label: "Hijacked".to_string(),
             stamps_required: 1,
             min_purchase_amount: 1,
