@@ -350,3 +350,22 @@ fn test_the_new_fields_fit_the_space_reserved_for_them() {
     assert_eq!(8 + loyalty::LoyaltyCard::INIT_SPACE, 139);
     assert_eq!(8 + loyalty::Business::INIT_SPACE, 241);
 }
+
+/// `card.stamps` is a u8 and claim_receipt increments it without a guard. What happens at 255?
+#[test]
+fn test_what_happens_to_a_card_at_the_stamp_ceiling() {
+    let id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let w = setup(&mut svm, id, 100, 0);
+    assert!(stamp(&mut svm, id, &w, 1).is_ok());
+
+    // Jump the card to the top of the byte rather than claiming 255 times.
+    let mut account = svm.get_account(&w.card).unwrap();
+    account.data[72] = 255;
+    svm.set_account(w.card, account).unwrap();
+
+    let res = stamp(&mut svm, id, &w, 2);
+    println!("stamp #256: {:?}", res.as_ref().map(|_| "OK".to_string()).map_err(|e| format!("{:?}", e.err)));
+    assert!(res.is_err(), "it should fail rather than wrap around to zero");
+    assert_eq!(card_of(&svm, w.card).stamps, 255, "and the card is unchanged");
+}
