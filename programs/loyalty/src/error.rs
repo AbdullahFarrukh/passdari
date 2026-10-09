@@ -52,4 +52,22 @@ pub enum ErrorCode {
     NotACard,
     #[msg("This card has already been migrated")]
     CardAlreadyMigrated,
+    #[msg("The business needs a name")]
+    BusinessNameRequired,
+    #[msg("That business name is too long")]
+    BusinessNameTooLong,
+    #[msg("That category is too long")]
+    CategoryTooLong,
+    #[msg("The reward needs a name")]
+    RewardLabelRequired,
+    #[msg("That reward name is too long")]
+    RewardLabelTooLong,
+    #[msg("That currency code is too long")]
+    CurrencyTooLong,
+    #[msg("A card must need at least one stamp")]
+    StampsRequiredTooLow,
+    #[msg("That is too many stamps to ask for")]
+    StampsRequiredTooHigh,
+    #[msg("A receipt must last between a minute and a day")]
+    ReceiptTtlOutOfRange,
 }

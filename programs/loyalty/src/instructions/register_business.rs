@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::state::Business;
+use crate::error::ErrorCode;
+use crate::instructions::business_rules::{check_settings, MAX_CURRENCY_LEN};
 
 #[derive(Accounts)]
 pub struct RegisterBusiness<'info> {
@@ -35,6 +37,9 @@ pub fn register_business_handler(
     currency: String,
     receipt_ttl_seconds: u32,
 ) -> Result<()> {
+    check_settings(&name, &category, &reward_label, stamps_required, receipt_ttl_seconds)?;
+    require!(currency.len() <= MAX_CURRENCY_LEN, ErrorCode::CurrencyTooLong);
+
     let business = &mut ctx.accounts.business;
     business.authority = ctx.accounts.authority.key();
     business.name = name;

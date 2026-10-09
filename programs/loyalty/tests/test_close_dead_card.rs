@@ -444,3 +444,116 @@ fn test_an_unmigrated_card_cannot_be_used_at_all() {
     let res = stamp_only(&mut svm, program_id, &w, 3);
     assert!(res.is_ok(), "once migrated the card works again: {:?}", res);
 }
+
+/// A shop asking for zero stamps used to be allowed, and it was not harmless: mint_voucher's
+/// `card.stamps >= card.stamps_required_snapshot` was satisfied by an empty card and took nothing away,
+/// so one stamp bought reward after reward, each a real NFT the relayer paid rent for. Refused now, on
+/// the way in and on the way through an edit.
+#[test]
+fn test_a_shop_cannot_ask_for_zero_stamps() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let owner = Keypair::new();
+    let relayer = Keypair::new();
+    svm.add_program(program_id, include_bytes!("../../../target/deploy/loyalty.so")).unwrap();
+    for who in [&owner, &relayer] { svm.airdrop(&who.pubkey(), 10_000_000_000).unwrap(); }
+    let business = pda(&[b"business", owner.pubkey().as_ref()], &program_id);
+
+    let register = |stamps: u8| Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::RegisterBusiness {
+            name: "Coffee Corner".into(), category: "cafe".into(), reward_label: "Free coffee".into(),
+            stamps_required: stamps, min_purchase_amount: 100_000, currency: "PKR".into(),
+            receipt_ttl_seconds: 300,
+        }.data(),
+        loyalty::accounts::RegisterBusiness {
+            business, authority: owner.pubkey(), relayer: relayer.pubkey(), system_program: system_program::ID,
+        }.to_account_metas(None),
+    );
+
+    assert_fails_with(send(&mut svm, &[register(0)], &relayer, &[&owner, &relayer]), "StampsRequiredTooLow");
+    assert!(svm.get_account(&business).is_none_or(|a| a.data.is_empty()), "nothing was created");
+
+    // One stamp is the least a card may ask for, and that is allowed.
+    assert!(send(&mut svm, &[register(1)], &relayer, &[&owner, &relayer]).is_ok(), "one stamp is fine");
+
+    // And a shop cannot sneak to zero by editing afterwards.
+    let edit = |stamps: u8| Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::UpdateBusinessConfig {
+            name: "Coffee Corner".into(), category: "cafe".into(), reward_label: "Free coffee".into(),
+            stamps_required: stamps, min_purchase_amount: 100_000, receipt_ttl_seconds: 300,
+        }.data(),
+        loyalty::accounts::UpdateBusinessConfig { business, authority: owner.pubkey() }.to_account_metas(None),
+    );
+    assert_fails_with(send(&mut svm, &[edit(0)], &relayer, &[&owner, &relayer]), "StampsRequiredTooLow");
+    assert_fails_with(send(&mut svm, &[edit(101)], &relayer, &[&owner, &relayer]), "StampsRequiredTooHigh");
+    assert!(send(&mut svm, &[edit(12)], &relayer, &[&owner, &relayer]).is_ok(), "a sensible change goes through");
+}
+
+/// A merchant editing their shop: everything the registration page asks for, including the name and
+/// category, which could not be changed before.
+#[test]
+fn test_a_merchant_can_edit_every_setting_without_moving_the_goalposts() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let w = setup(&mut svm, program_id, 8);
+
+    // A customer is already seven stamps into an eight-stamp card.
+    assert!(stamp(&mut svm, program_id, &w, 1, 0).is_ok());
+    let mut account = svm.get_account(&w.card).unwrap();
+    account.data[72] = 7;
+    svm.set_account(w.card, account).unwrap();
+
+    let edit = Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::UpdateBusinessConfig {
+            name: "Blue Door Cafe".into(), category: "Restaurant".into(),
+            reward_label: "Free karahi".into(), stamps_required: 20,
+            min_purchase_amount: 999_000, receipt_ttl_seconds: 3600,
+        }.data(),
+        loyalty::accounts::UpdateBusinessConfig { business: w.business, authority: w.owner.pubkey() }
+            .to_account_metas(None),
+    );
+    assert!(send(&mut svm, &[edit], &w.relayer, &[&w.owner, &w.relayer]).is_ok(), "the edit goes through");
+
+    let b = loyalty::Business::try_deserialize(
+        &mut svm.get_account(&w.business).unwrap().data.as_slice()).unwrap();
+    assert_eq!(b.name, "Blue Door Cafe", "the name can be changed now");
+    assert_eq!(b.category, "Restaurant", "and the category");
+    assert_eq!(b.reward_label, "Free karahi");
+    assert_eq!(b.stamps_required, 20);
+    assert_eq!(b.min_purchase_amount, 999_000);
+    assert_eq!(b.receipt_ttl_seconds, 3600);
+
+    // The customer already collecting is untouched: their card keeps the eight it was opened under.
+    let card = loyalty::LoyaltyCard::try_deserialize(
+        &mut svm.get_account(&w.card).unwrap().data.as_slice()).unwrap();
+    assert_eq!(card.stamps_required_snapshot, 8, "a shop cannot move the goalposts on a card in progress");
+    assert_eq!(card.stamps, 7);
+}
+
+/// Only the shop's own wallet may change its settings.
+#[test]
+fn test_a_stranger_cannot_edit_someone_elses_shop() {
+    let program_id = loyalty::id();
+    let mut svm = LiteSVM::new();
+    let w = setup(&mut svm, program_id, 8);
+    let stranger = Keypair::new();
+    svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &loyalty::instruction::UpdateBusinessConfig {
+            name: "Stolen".into(), category: "cafe".into(), reward_label: "Free everything".into(),
+            stamps_required: 1, min_purchase_amount: 0, receipt_ttl_seconds: 300,
+        }.data(),
+        loyalty::accounts::UpdateBusinessConfig { business: w.business, authority: stranger.pubkey() }
+            .to_account_metas(None),
+    );
+    let res = send(&mut svm, &[ix], &stranger, &[&stranger]);
+    assert!(res.is_err(), "a stranger must not be able to rewrite a shop's terms");
+    let b = loyalty::Business::try_deserialize(
+        &mut svm.get_account(&w.business).unwrap().data.as_slice()).unwrap();
+    assert_eq!(b.name, "Coffee Corner", "the shop was left alone");
+}
